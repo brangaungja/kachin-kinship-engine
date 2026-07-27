@@ -1,0 +1,15 @@
+{
+  "name": "kachin-kinship-engine",
+  "version": "1.0.0",
+  "description": "Core mathematical engine for Kachin kinship calculations -- alliance-zone derivation, generation/seniority math, and kinship-term resolution.",
+  "type": "module",
+  "main": "src/KinshipEngine.js",
+  "exports": {
+    ".": "./src/KinshipEngine.js"
+  },
+  "files": [
+    "src"
+  ],
+  "license": "UNLICENSED",
+  "private": true
+}
