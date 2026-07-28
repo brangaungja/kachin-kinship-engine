@@ -338,365 +338,41 @@ export const calculateSeniority = (speaker, target, relationships = [], persons 
 };
 
 
-// 4. Kinship Term Resolution
-export const calculateKinshipTerm = (
-  speaker,
-  target,
-  persons,
-  relationships,
-  kinshipRules,
-  termRules,
-  manualGenDiff = null,
-  manualSeniority = null,
-  manualZones = null,
-  defaultKinshipRules = null,
-  isStranger = false,
-) => {
-  if (!speaker || !target || speaker.id === target.id) return null;
+const normG = (g) => {
+  if (!g) return 'ANY';
+  const str = String(g).trim().toUpperCase();
+  if (str === 'M' || str === 'MALE') return 'M';
+  if (str === 'F' || str === 'FEMALE') return 'F';
+  return 'ANY';
+};
 
-  // 1. Calculate Alliance Zone
-  // When isStranger is true, pass empty arrays [] for persons & relationships
-  // so family tree graph connections are completely excluded.
-  const boxes = getKinshipBoxesForPerson(
-    speaker.id,
-    isStranger ? [] : persons,
-    isStranger ? [] : relationships,
-    kinshipRules,
-    defaultKinshipRules,
-  );
-  if (manualZones) {
-    Object.entries(manualZones).forEach(([zone, clanIds]) => {
-      if (!boxes[zone] || !Array.isArray(clanIds)) return;
-      clanIds.forEach((clanId) => boxes[zone].add(clanId));
-    });
-  }
-  let targetZone = null;
-
-  // A clan can legitimately belong to more than one box at once -- e.g. a wife's
-  // brother's wife's clan is both Mayu (direct) and Mayu ni a Mayu (via the cascade),
-  // simultaneously and correctly. Resolving that by iterating `boxes` (an object) used
-  // to depend on JS key declaration order, an accident with no cultural basis. This
-  // explicit priority prefers the more specific/extended zone over its base zone --
-  // a narrow interim rule, not the full tie-break design (still open: which zone wins
-  // when a clan is in both Mayu and Dama, and surfacing real ambiguity to the user
-  // instead of always picking one silently).
-  const ZONE_PRIORITY = ['Mayu ni a Mayu', 'Dama ni a Dama', 'Kahpu Kanau', 'Mayu', 'Dama'];
-  if (target.clanId) {
-    for (const zoneName of ZONE_PRIORITY) {
-      if (boxes[zoneName]?.has(target.clanId)) {
-        targetZone = zoneName;
-        break;
-      }
-    }
-  }
-
-  if (!targetZone && speaker.clanId && target.clanId === speaker.clanId) {
-    targetZone = 'Kahpu Kanau';
-  }
-
-  if (!targetZone && speaker.clanId && target.clanId) {
-    targetZone = resolveDefaultAllianceZone(speaker.clanId, target.clanId, defaultKinshipRules);
-  }
-
-  // 1.5 Structural Zone Inference from Family Tree (bypassed if isStranger === true)
-  if (!targetZone && !isStranger) {
-    // A. Direct Parent
-    const isDirectParent = relationships.some(r => r.type === 'parent' && r.person1Id === target.id && r.person2Id === speaker.id);
-    if (isDirectParent) {
-      targetZone = target.gender === 'Female' ? 'Mayu' : 'Kahpu Kanau';
-    }
-
-    // B. Direct Child
-    if (!targetZone) {
-      const isDirectChild = relationships.some(r => r.type === 'parent' && r.person1Id === speaker.id && r.person2Id === target.id);
-      if (isDirectChild) targetZone = 'Kahpu Kanau';
-    }
-
-    // C. Direct Sibling
-    if (!targetZone) {
-      const isDirectSibling = relationships.some(r => r.type === 'sibling' && ((r.person1Id === speaker.id && r.person2Id === target.id) || (r.person2Id === speaker.id && r.person1Id === target.id)));
-      if (isDirectSibling) targetZone = 'Kahpu Kanau';
-    }
-
-    // D. Direct Spouse
-    if (!targetZone) {
-      const isDirectSpouse = relationships.some(r => r.type === 'spouse' && ((r.person1Id === speaker.id && r.person2Id === target.id) || (r.person2Id === speaker.id && r.person1Id === target.id)));
-      if (isDirectSpouse) {
-        targetZone = speaker.gender === 'Male' ? 'Mayu' : 'Dama';
-      }
-    }
-
-    // E. Sibling of a Parent (Parent's Brother / Parent's Sister)
-    if (!targetZone) {
-      const parents = relationships.filter(r => r.type === 'parent' && r.person2Id === speaker.id).map(r => r.person1Id);
-      for (const pId of parents) {
-        const parent = persons.find(p => p.id === pId);
-        const isParentSibling = relationships.some(sr => sr.type === 'sibling' && ((sr.person1Id === pId && sr.person2Id === target.id) || (sr.person2Id === pId && sr.person1Id === target.id)));
-        if (isParentSibling && parent) {
-          targetZone = parent.gender === 'Female' ? 'Mayu' : 'Kahpu Kanau';
-          break;
-        }
-      }
-    }
-
-    // F. Spouse of a Sibling or Spouse of a Parent's Sibling
-    if (!targetZone) {
-      const targetSpouses = relationships
-        .filter(r => r.type === 'spouse' && (r.person1Id === target.id || r.person2Id === target.id))
-        .map(r => r.person1Id === target.id ? r.person2Id : r.person1Id);
-
-      for (const spouseId of targetSpouses) {
-        const spouse = persons.find(p => p.id === spouseId);
-        if (!spouse) continue;
-
-        // Is spouse a direct sibling of speaker?
-        const isSibling = relationships.some(sr => sr.type === 'sibling' && ((sr.person1Id === speaker.id && sr.person2Id === spouseId) || (sr.person2Id === speaker.id && sr.person1Id === spouseId)));
-        if (isSibling) {
-          targetZone = spouse.gender === 'Male' ? 'Mayu' : 'Dama';
-          break;
-        }
-
-        // Is spouse a sibling of speaker's parent?
-        const parents = relationships.filter(r => r.type === 'parent' && r.person2Id === speaker.id).map(r => r.person1Id);
-        for (const pId of parents) {
-          const parent = persons.find(p => p.id === pId);
-          const isParentSibling = relationships.some(sr => sr.type === 'sibling' && ((sr.person1Id === pId && sr.person2Id === spouseId) || (sr.person2Id === pId && sr.person1Id === spouseId)));
-          if (isParentSibling && parent) {
-            if (parent.gender === 'Female') {
-              // Mother's side:
-              // Mother's Brother's Wife -> Mayu ni a Mayu (Ni)
-              // Mother's Sister's Husband -> Kahpu Kanau (Kawa)
-              targetZone = spouse.gender === 'Male' ? 'Mayu ni a Mayu' : 'Kahpu Kanau';
-            } else {
-              // Father's side: Father's Brother's Wife -> Mayu (Kanu), Father's Sister's Husband -> Dama (Gu)
-              targetZone = spouse.gender === 'Male' ? 'Mayu' : 'Dama';
-            }
-            break;
-          }
-        }
-        if (targetZone) break;
-      }
-    }
-
-    // G. Sibling of a Spouse
-    if (!targetZone) {
-      const speakerSpouses = relationships
-        .filter(r => r.type === 'spouse' && (r.person1Id === speaker.id || r.person2Id === speaker.id))
-        .map(r => r.person1Id === speaker.id ? r.person2Id : r.person1Id);
-
-      for (const spouseId of speakerSpouses) {
-        const isSpouseSibling = relationships.some(sr => sr.type === 'sibling' && ((sr.person1Id === spouseId && sr.person2Id === target.id) || (sr.person2Id === spouseId && sr.person1Id === target.id)));
-        if (isSpouseSibling) {
-          targetZone = speaker.gender === 'Male' ? 'Mayu' : 'Dama';
-          break;
-        }
-      }
-    }
-
-    // H. Spouse of Mother's Brother (Mother's Brother's Wife)
-    if (!targetZone) {
-      const targetSpouses = relationships
-        .filter(r => r.type === 'spouse' && (r.person1Id === target.id || r.person2Id === target.id))
-        .map(r => r.person1Id === target.id ? r.person2Id : r.person1Id);
-
-      const parents = relationships.filter(r => r.type === 'parent' && r.person2Id === speaker.id).map(r => r.person1Id);
-      for (const spouseId of targetSpouses) {
-        for (const pId of parents) {
-          const parent = persons.find(p => p.id === pId);
-          if (parent?.gender === 'Female') {
-            const isMomBrother = relationships.some(sr => sr.type === 'sibling' && ((sr.person1Id === pId && sr.person2Id === spouseId) || (sr.person2Id === pId && sr.person1Id === spouseId)));
-            if (isMomBrother) {
-              targetZone = 'Mayu ni a Mayu';
-              break;
-            }
-          }
-        }
-        if (targetZone) break;
-      }
-    }
-
-    // I. Child of a Relative (Wife's Sister's Child, Brother's Child, Sister's Child, etc.)
-    if (!targetZone) {
-      const speakerSpouses = relationships
-        .filter(r => r.type === 'spouse' && (r.person1Id === speaker.id || r.person2Id === speaker.id))
-        .map(r => r.person1Id === speaker.id ? r.person2Id : r.person1Id);
-
-      const targetParents = relationships
-        .filter(r => r.type === 'parent' && r.person2Id === target.id)
-        .map(r => r.person1Id);
-
-      for (const pId of targetParents) {
-        // Child of Wife's Sister or Husband's Sister
-        for (const spouseId of speakerSpouses) {
-          const isSpouseSibling = relationships.some(sr => sr.type === 'sibling' && ((sr.person1Id === spouseId && sr.person2Id === pId) || (sr.person2Id === spouseId && sr.person1Id === pId)));
-          if (isSpouseSibling) {
-            targetZone = speaker.gender === 'Male' ? 'Mayu ni a Dama' : 'Dama ni a Mayu';
-            break;
-          }
-        }
-
-        // Child of Direct Sibling
-        const isDirectSibling = relationships.some(sr => sr.type === 'sibling' && ((sr.person1Id === speaker.id && sr.person2Id === pId) || (sr.person2Id === speaker.id && sr.person1Id === pId)));
-        if (isDirectSibling) {
-          const parent = persons.find(p => p.id === pId);
-          targetZone = parent?.gender === 'Female' ? (speaker.gender === 'Male' ? 'Dama' : 'Kahpu Kanau') : 'Kahpu Kanau';
-        }
-        if (targetZone) break;
-      }
-    }
-
-    // J. Spouse of a Spouse's Sibling
-    if (!targetZone) {
-      const speakerSpouses = relationships
-        .filter(r => r.type === 'spouse' && (r.person1Id === speaker.id || r.person2Id === speaker.id))
-        .map(r => r.person1Id === speaker.id ? r.person2Id : r.person1Id);
-
-      const targetSpouses = relationships
-        .filter(r => r.type === 'spouse' && (r.person1Id === target.id || r.person2Id === target.id))
-        .map(r => r.person1Id === target.id ? r.person2Id : r.person1Id);
-
-      for (const spId of speakerSpouses) {
-        for (const tSpId of targetSpouses) {
-          const isSpouseSib = relationships.some(sr => sr.type === 'sibling' && ((sr.person1Id === spId && sr.person2Id === tSpId) || (sr.person2Id === spId && sr.person1Id === tSpId)));
-          if (isSpouseSib) {
-            const spPerson = persons.find(p => p.id === spId);
-            const tSpPerson = persons.find(p => p.id === tSpId);
-            if (spPerson && tSpPerson) {
-              if (spPerson.gender === tSpPerson.gender) {
-                // Two brothers' wives or two sisters' husbands are Kahpu Kanau
-                targetZone = 'Kahpu Kanau';
-              } else {
-                // Wife's Brother's Wife -> Mayu ni a Mayu
-                // Husband's Sister's Husband -> Dama ni a Dama
-                targetZone = speaker.gender === 'Male' ? 'Mayu ni a Mayu' : 'Dama ni a Dama';
-              }
-              break;
-            }
-          }
-        }
-        if (targetZone) break;
-      }
-    }
-
-    // K. Infer zone from existing tree relatives belonging to target.clanId if target is a mock/stranger object
-    if (!targetZone && target.clanId && target.id === 'stranger' && persons && persons.length > 0) {
-      const realClanPersons = persons.filter(p => p.clanId === target.clanId && p.id !== speaker.id && p.id !== target.id);
-      for (const realPerson of realClanPersons) {
-        const realRes = calculateKinshipTerm(
-          speaker,
-          realPerson,
-          persons,
-          relationships,
-          kinshipRules,
-          termRules,
-          null,
-          null,
-          manualZones,
-          defaultKinshipRules
-        );
-        if (realRes?.zone) {
-          targetZone = realRes.zone;
-          break;
-        }
-      }
-    }
-  }
-
-  // 2. Pre-calculate direct relations for exceptions
-  let isSpouseParent = false;
-  let isDirectSpouse = false;
-
-  const speakerSpouses = relationships.filter(r => r.type === 'spouse' && (r.person1Id === speaker.id || r.person2Id === speaker.id)).map(r => r.person1Id === speaker.id ? r.person2Id : r.person1Id);
-
-  if (speakerSpouses.includes(target.id)) {
-    isDirectSpouse = true;
-  }
-
-  if (speakerSpouses.length > 0) {
-    isSpouseParent = relationships.some(r => r.type === 'parent' && speakerSpouses.includes(r.person2Id) && r.person1Id === target.id);
-  }
-
-  // A sister's child gets its own distinct term (maternal uncle vs. paternal
-  // uncle) -- unlike a brother's child, who stays inside the speaker's own
-  // patrilineal line and is already covered by the generation-based engines.
-  const speakerSiblingIds = relationships.filter(r => r.type === 'sibling' && (r.person1Id === speaker.id || r.person2Id === speaker.id)).map(r => r.person1Id === speaker.id ? r.person2Id : r.person1Id);
-  const speakerSisterIds = speakerSiblingIds.filter(id => persons.find(p => p.id === id)?.gender === 'Female');
-  const isSistersChild = speakerSisterIds.length > 0 && relationships.some(r => r.type === 'parent' && speakerSisterIds.includes(r.person1Id) && r.person2Id === target.id);
-
-  const normG = (g) => {
-    if (!g) return 'ANY';
-    const str = String(g).trim().toUpperCase();
-    if (str === 'M' || str === 'MALE') return 'M';
-    if (str === 'F' || str === 'FEMALE') return 'F';
-    return 'ANY';
-  };
-
-  const sGender = normG(speaker.gender);
-  const tGender = normG(target.gender);
-
-  // 3. Evaluate Direct Exception Rules First (Bypasses Zone requirement)
-  const exceptionMatches = termRules.filter(r => {
-    if (!r.exception_flag || r.exception_flag === 'none') return false;
-    const rTargetG = normG(r.target_gender);
-    const rSpeakerG = normG(r.speaker_gender);
-
-    if (rTargetG !== 'ANY' && rTargetG !== tGender) return false;
-    if (rSpeakerG !== 'ANY' && rSpeakerG !== sGender && r.engine_type !== 'independent') return false;
-
-    if (r.exception_flag === 'direct_spouse' && isDirectSpouse) return true;
-    if (r.exception_flag === 'direct_mother_in_law' && isSpouseParent && tGender === 'F') return true;
-    if (r.exception_flag === 'direct_female_sibling_child' && isSistersChild) return true;
-
-    return false;
-  });
-
-  if (exceptionMatches.length > 0) {
-    const uniqueTermsYouCallThem = [...new Set(exceptionMatches.map(r => r.term_you_call_them))].join(' / ');
-    const uniqueTermsTheyCallYou = [...new Set(exceptionMatches.map(r => r.term_they_call_you))].join(' / ');
-    const uniqueNotes = [...new Set(exceptionMatches.map(r => r.cultural_notes))].filter(Boolean).join(' | ');
-    return {
-      youCallThem: uniqueTermsYouCallThem,
-      theyCallYou: uniqueTermsTheyCallYou,
-      notes: uniqueNotes,
-      zone: targetZone || 'Direct',
-      generation: manualGenDiff !== null ? manualGenDiff : calculateGenerationDiff(speaker.id, target.id, relationships, persons),
-      seniority: 'unknown'
-    };
-  }
-
-  // If not an exception, we MUST have a targetZone to proceed with cultural mapping
-  if (!targetZone) return null;
-
-  // 4. Calculate Generation and Seniority
-  let genDiff = manualGenDiff !== null ? manualGenDiff : calculateGenerationDiff(speaker.id, target.id, relationships, persons);
-  const seniority = manualSeniority !== null ? manualSeniority : calculateSeniority(speaker, target, relationships, persons);
-
-  // Apply the Respect Elevation Override Rule (>= +2 for Mayu ni a Mayu -> 99)
-  if (targetZone === 'Mayu ni a Mayu' && genDiff >= 2) {
-    genDiff = 99;
-  }
-
-  // 5. Evaluate Normal Rules with Fallback Cascade
+/**
+ * Zone-specific term-rule resolution, given an already-decided zone and
+ * already-computed generation/seniority. Shared by calculateKinshipTerm
+ * (one best-guess zone per call) and calculateAllKinshipTerms' multi-
+ * candidate path (one call per zone a clan-only lookup's clan legitimately
+ * belongs to, when it's in more than one alliance box at once).
+ */
+const resolveTermForZone = (targetZone, genDiff, seniority, termRules, sGender, tGender) => {
+  // Mayu ni a Dama / Dama ni a Mayu are transient zone labels that were
+  // never meant to carry their own term rules (the DB schema doesn't allow
+  // it) -- they always fall through to Kahpu Kanau.
   const resolveFallbackZone = (zone) => {
     if (zone === 'Mayu ni a Dama' || zone === 'Dama ni a Mayu') return 'Kahpu Kanau';
-    if (zone === 'Mayu ni a Mayu') return 'Mayu';
-    if (zone === 'Dama ni a Dama') return 'Dama';
     return zone;
   };
 
-  const getZoneSpecificRules = (queryZone) => {
-    return termRules.filter(r => {
-      const rTargetG = normG(r.target_gender);
-      const rSpeakerG = normG(r.speaker_gender);
+  const getZoneSpecificRules = (queryZone) => termRules.filter(r => {
+    const rTargetG = normG(r.target_gender);
+    const rSpeakerG = normG(r.speaker_gender);
 
-      const matchZone = r.alliance_zone === queryZone;
-      const matchTargetGender = rTargetG === 'ANY' || rTargetG === tGender;
-      const matchSpeakerGender = rSpeakerG === 'ANY' || rSpeakerG === sGender || r.engine_type === 'independent';
-      const matchException = !r.exception_flag || r.exception_flag === 'none';
+    const matchZone = r.alliance_zone === queryZone;
+    const matchTargetGender = rTargetG === 'ANY' || rTargetG === tGender;
+    const matchSpeakerGender = rSpeakerG === 'ANY' || rSpeakerG === sGender || r.engine_type === 'independent';
+    const matchException = !r.exception_flag || r.exception_flag === 'none';
 
-      return matchZone && matchTargetGender && matchSpeakerGender && matchException;
-    });
-  };
+    return matchZone && matchTargetGender && matchSpeakerGender && matchException;
+  });
 
   let activeZone = targetZone;
   let zoneRules = getZoneSpecificRules(activeZone);
@@ -773,6 +449,355 @@ export const calculateKinshipTerm = (
   };
 };
 
+// 4. Kinship Term Resolution
+export const calculateKinshipTerm = (
+  speaker,
+  target,
+  persons,
+  relationships,
+  kinshipRules,
+  termRules,
+  manualGenDiff = null,
+  manualSeniority = null,
+  manualZones = null,
+  defaultKinshipRules = null,
+  isStranger = false,
+) => {
+  if (!speaker || !target || speaker.id === target.id) return null;
+
+  // 1. Calculate Alliance Zone
+  // When isStranger is true, pass empty arrays [] for persons & relationships
+  // so family tree graph connections are completely excluded.
+  const boxes = getKinshipBoxesForPerson(
+    speaker.id,
+    isStranger ? [] : persons,
+    isStranger ? [] : relationships,
+    kinshipRules,
+    defaultKinshipRules,
+  );
+  if (manualZones) {
+    Object.entries(manualZones).forEach(([zone, clanIds]) => {
+      if (!boxes[zone] || !Array.isArray(clanIds)) return;
+      clanIds.forEach((clanId) => boxes[zone].add(clanId));
+    });
+  }
+  let targetZone = null;
+
+  // 1. Structural Zone Inference from Family Tree (tried first, bypassed if
+  // isStranger === true). A real, direct family-tree relationship (parent,
+  // sibling, spouse, parent's sibling, etc.) always outranks the generic
+  // clan-level cascade below -- the clan boxes summarize marriages across the
+  // *whole* tree, so a clan can legitimately end up in more than one box (e.g.
+  // a completely unrelated marriage elsewhere puts it in "Mayu ni a Mayu" too).
+  // That's fine for a clan you have no direct link to, but for someone you're
+  // actually, individually connected to -- your mother's own sister is Mayu to
+  // you regardless of what some other branch's marriage did to her clan's box
+  // membership -- the direct path is the ground truth and must win.
+  if (!isStranger) {
+    // A. Direct Parent
+    const isDirectParent = relationships.some(r => r.type === 'parent' && r.person1Id === target.id && r.person2Id === speaker.id);
+    if (isDirectParent) {
+      targetZone = target.gender === 'Female' ? 'Mayu' : 'Kahpu Kanau';
+    }
+
+    // B. Direct Child
+    if (!targetZone) {
+      const isDirectChild = relationships.some(r => r.type === 'parent' && r.person1Id === speaker.id && r.person2Id === target.id);
+      if (isDirectChild) targetZone = 'Kahpu Kanau';
+    }
+
+    // C. Direct Sibling
+    if (!targetZone) {
+      const isDirectSibling = areSiblings(speaker.id, target.id, relationships);
+      if (isDirectSibling) targetZone = 'Kahpu Kanau';
+    }
+
+    // D. Direct Spouse
+    if (!targetZone) {
+      const isDirectSpouse = relationships.some(r => r.type === 'spouse' && ((r.person1Id === speaker.id && r.person2Id === target.id) || (r.person2Id === speaker.id && r.person1Id === target.id)));
+      if (isDirectSpouse) {
+        targetZone = speaker.gender === 'Male' ? 'Mayu' : 'Dama';
+      }
+    }
+
+    // E. Sibling of a Parent (Parent's Brother / Parent's Sister)
+    if (!targetZone) {
+      const parents = relationships.filter(r => r.type === 'parent' && r.person2Id === speaker.id).map(r => r.person1Id);
+      for (const pId of parents) {
+        const parent = persons.find(p => p.id === pId);
+        const isParentSibling = areSiblings(pId, target.id, relationships);
+        if (isParentSibling && parent) {
+          targetZone = parent.gender === 'Female' ? 'Mayu' : 'Kahpu Kanau';
+          break;
+        }
+      }
+    }
+
+    // F. Spouse of a Sibling or Spouse of a Parent's Sibling
+    if (!targetZone) {
+      const targetSpouses = relationships
+        .filter(r => r.type === 'spouse' && (r.person1Id === target.id || r.person2Id === target.id))
+        .map(r => r.person1Id === target.id ? r.person2Id : r.person1Id);
+
+      for (const spouseId of targetSpouses) {
+        const spouse = persons.find(p => p.id === spouseId);
+        if (!spouse) continue;
+
+        // Is spouse a direct sibling of speaker?
+        const isSibling = areSiblings(speaker.id, spouseId, relationships);
+        if (isSibling) {
+          targetZone = spouse.gender === 'Male' ? 'Mayu' : 'Dama';
+          break;
+        }
+
+        // Is spouse a sibling of speaker's parent?
+        const parents = relationships.filter(r => r.type === 'parent' && r.person2Id === speaker.id).map(r => r.person1Id);
+        for (const pId of parents) {
+          const parent = persons.find(p => p.id === pId);
+          const isParentSibling = areSiblings(pId, spouseId, relationships);
+          if (isParentSibling && parent) {
+            if (parent.gender === 'Female') {
+              // Mother's side:
+              // Mother's Brother's Wife -> Mayu ni a Mayu (Ni)
+              // Mother's Sister's Husband -> Kahpu Kanau (Kawa)
+              targetZone = spouse.gender === 'Male' ? 'Mayu ni a Mayu' : 'Kahpu Kanau';
+            } else {
+              // Father's side: Father's Brother's Wife -> Mayu (Kanu), Father's Sister's Husband -> Dama (Gu)
+              targetZone = spouse.gender === 'Male' ? 'Mayu' : 'Dama';
+            }
+            break;
+          }
+        }
+        if (targetZone) break;
+      }
+    }
+
+    // G. Sibling of a Spouse
+    if (!targetZone) {
+      const speakerSpouses = relationships
+        .filter(r => r.type === 'spouse' && (r.person1Id === speaker.id || r.person2Id === speaker.id))
+        .map(r => r.person1Id === speaker.id ? r.person2Id : r.person1Id);
+
+      for (const spouseId of speakerSpouses) {
+        const isSpouseSibling = areSiblings(spouseId, target.id, relationships);
+        if (isSpouseSibling) {
+          targetZone = speaker.gender === 'Male' ? 'Mayu' : 'Dama';
+          break;
+        }
+      }
+    }
+
+    // H. Spouse of Mother's Brother (Mother's Brother's Wife)
+    if (!targetZone) {
+      const targetSpouses = relationships
+        .filter(r => r.type === 'spouse' && (r.person1Id === target.id || r.person2Id === target.id))
+        .map(r => r.person1Id === target.id ? r.person2Id : r.person1Id);
+
+      const parents = relationships.filter(r => r.type === 'parent' && r.person2Id === speaker.id).map(r => r.person1Id);
+      for (const spouseId of targetSpouses) {
+        for (const pId of parents) {
+          const parent = persons.find(p => p.id === pId);
+          if (parent?.gender === 'Female') {
+            const isMomBrother = areSiblings(pId, spouseId, relationships);
+            if (isMomBrother) {
+              targetZone = 'Mayu ni a Mayu';
+              break;
+            }
+          }
+        }
+        if (targetZone) break;
+      }
+    }
+
+    // I. Child of a Relative (Wife's Sister's Child, Brother's Child, Sister's Child, etc.)
+    if (!targetZone) {
+      const speakerSpouses = relationships
+        .filter(r => r.type === 'spouse' && (r.person1Id === speaker.id || r.person2Id === speaker.id))
+        .map(r => r.person1Id === speaker.id ? r.person2Id : r.person1Id);
+
+      const targetParents = relationships
+        .filter(r => r.type === 'parent' && r.person2Id === target.id)
+        .map(r => r.person1Id);
+
+      for (const pId of targetParents) {
+        // Child of Wife's Sister or Husband's Sister
+        for (const spouseId of speakerSpouses) {
+          const isSpouseSibling = areSiblings(spouseId, pId, relationships);
+          if (isSpouseSibling) {
+            targetZone = speaker.gender === 'Male' ? 'Mayu ni a Dama' : 'Dama ni a Mayu';
+            break;
+          }
+        }
+
+        // Child of Direct Sibling
+        const isDirectSibling = areSiblings(speaker.id, pId, relationships);
+        if (isDirectSibling) {
+          const parent = persons.find(p => p.id === pId);
+          targetZone = parent?.gender === 'Female' ? (speaker.gender === 'Male' ? 'Dama' : 'Kahpu Kanau') : 'Kahpu Kanau';
+        }
+        if (targetZone) break;
+      }
+    }
+
+    // J. Spouse of a Spouse's Sibling
+    if (!targetZone) {
+      const speakerSpouses = relationships
+        .filter(r => r.type === 'spouse' && (r.person1Id === speaker.id || r.person2Id === speaker.id))
+        .map(r => r.person1Id === speaker.id ? r.person2Id : r.person1Id);
+
+      const targetSpouses = relationships
+        .filter(r => r.type === 'spouse' && (r.person1Id === target.id || r.person2Id === target.id))
+        .map(r => r.person1Id === target.id ? r.person2Id : r.person1Id);
+
+      for (const spId of speakerSpouses) {
+        for (const tSpId of targetSpouses) {
+          const isSpouseSib = areSiblings(spId, tSpId, relationships);
+          if (isSpouseSib) {
+            const spPerson = persons.find(p => p.id === spId);
+            const tSpPerson = persons.find(p => p.id === tSpId);
+            if (spPerson && tSpPerson) {
+              if (spPerson.gender === tSpPerson.gender) {
+                // Two brothers' wives or two sisters' husbands are Kahpu Kanau
+                targetZone = 'Kahpu Kanau';
+              } else {
+                // Wife's Brother's Wife -> Mayu ni a Mayu
+                // Husband's Sister's Husband -> Dama ni a Dama
+                targetZone = speaker.gender === 'Male' ? 'Mayu ni a Mayu' : 'Dama ni a Dama';
+              }
+              break;
+            }
+          }
+        }
+        if (targetZone) break;
+      }
+    }
+
+    // K. Infer zone from existing tree relatives belonging to target.clanId if target is a mock/stranger object
+    if (!targetZone && target.clanId && target.id === 'stranger' && persons && persons.length > 0) {
+      const realClanPersons = persons.filter(p => p.clanId === target.clanId && p.id !== speaker.id && p.id !== target.id);
+      for (const realPerson of realClanPersons) {
+        const realRes = calculateKinshipTerm(
+          speaker,
+          realPerson,
+          persons,
+          relationships,
+          kinshipRules,
+          termRules,
+          null,
+          null,
+          manualZones,
+          defaultKinshipRules
+        );
+        if (realRes?.zone) {
+          targetZone = realRes.zone;
+          break;
+        }
+      }
+    }
+  }
+
+  // 1.5 Alliance Zone from clan cascade (fallback: only used when no direct
+  // family-tree relationship was found above -- e.g. a clan member you have
+  // no individual link to, or isStranger === true).
+  //
+  // A clan can legitimately belong to more than one box at once -- e.g. a wife's
+  // brother's wife's clan is both Mayu (direct) and Mayu ni a Mayu (via the cascade),
+  // simultaneously and correctly. Resolving that by iterating `boxes` (an object) used
+  // to depend on JS key declaration order, an accident with no cultural basis. This
+  // explicit priority prefers the more specific/extended zone over its base zone --
+  // a narrow interim rule, not the full tie-break design (still open: which zone wins
+  // when a clan is in both Mayu and Dama, and surfacing real ambiguity to the user
+  // instead of always picking one silently).
+  if (!targetZone) {
+    const ZONE_PRIORITY = ['Mayu ni a Mayu', 'Dama ni a Dama', 'Kahpu Kanau', 'Mayu', 'Dama'];
+    if (target.clanId) {
+      for (const zoneName of ZONE_PRIORITY) {
+        if (boxes[zoneName]?.has(target.clanId)) {
+          targetZone = zoneName;
+          break;
+        }
+      }
+    }
+
+    if (!targetZone && speaker.clanId && target.clanId === speaker.clanId) {
+      targetZone = 'Kahpu Kanau';
+    }
+
+    if (!targetZone && speaker.clanId && target.clanId) {
+      targetZone = resolveDefaultAllianceZone(speaker.clanId, target.clanId, defaultKinshipRules);
+    }
+  }
+
+  // 2. Pre-calculate direct relations for exceptions
+  let isSpouseParent = false;
+  let isDirectSpouse = false;
+
+  const speakerSpouses = relationships.filter(r => r.type === 'spouse' && (r.person1Id === speaker.id || r.person2Id === speaker.id)).map(r => r.person1Id === speaker.id ? r.person2Id : r.person1Id);
+
+  if (speakerSpouses.includes(target.id)) {
+    isDirectSpouse = true;
+  }
+
+  if (speakerSpouses.length > 0) {
+    isSpouseParent = relationships.some(r => r.type === 'parent' && speakerSpouses.includes(r.person2Id) && r.person1Id === target.id);
+  }
+
+  // A sister's child gets its own distinct term (maternal uncle vs. paternal
+  // uncle) -- unlike a brother's child, who stays inside the speaker's own
+  // patrilineal line and is already covered by the generation-based engines.
+  const speakerSiblingIds = persons.filter(p => p.id !== speaker.id && areSiblings(speaker.id, p.id, relationships)).map(p => p.id);
+  const speakerSisterIds = speakerSiblingIds.filter(id => persons.find(p => p.id === id)?.gender === 'Female');
+  const isSistersChild = speakerSisterIds.length > 0 && relationships.some(r => r.type === 'parent' && speakerSisterIds.includes(r.person1Id) && r.person2Id === target.id);
+
+  const sGender = normG(speaker.gender);
+  const tGender = normG(target.gender);
+
+  // 3. Evaluate Direct Exception Rules First (Bypasses Zone requirement)
+  const exceptionMatches = termRules.filter(r => {
+    if (!r.exception_flag || r.exception_flag === 'none') return false;
+    const rTargetG = normG(r.target_gender);
+    const rSpeakerG = normG(r.speaker_gender);
+
+    if (rTargetG !== 'ANY' && rTargetG !== tGender) return false;
+    if (rSpeakerG !== 'ANY' && rSpeakerG !== sGender && r.engine_type !== 'independent') return false;
+
+    if (r.exception_flag === 'direct_spouse' && isDirectSpouse) return true;
+    if (r.exception_flag === 'direct_mother_in_law' && isSpouseParent && tGender === 'F') return true;
+    if (r.exception_flag === 'direct_female_sibling_child' && isSistersChild) return true;
+
+    return false;
+  });
+
+  if (exceptionMatches.length > 0) {
+    const uniqueTermsYouCallThem = [...new Set(exceptionMatches.map(r => r.term_you_call_them))].join(' / ');
+    const uniqueTermsTheyCallYou = [...new Set(exceptionMatches.map(r => r.term_they_call_you))].join(' / ');
+    const uniqueNotes = [...new Set(exceptionMatches.map(r => r.cultural_notes))].filter(Boolean).join(' | ');
+    return {
+      youCallThem: uniqueTermsYouCallThem,
+      theyCallYou: uniqueTermsTheyCallYou,
+      notes: uniqueNotes,
+      zone: targetZone || 'Direct',
+      generation: manualGenDiff !== null ? manualGenDiff : calculateGenerationDiff(speaker.id, target.id, relationships, persons),
+      seniority: 'unknown'
+    };
+  }
+
+  // If not an exception, we MUST have a targetZone to proceed with cultural mapping
+  if (!targetZone) return null;
+
+  // 4. Calculate Generation and Seniority
+  let genDiff = manualGenDiff !== null ? manualGenDiff : calculateGenerationDiff(speaker.id, target.id, relationships, persons);
+  const seniority = manualSeniority !== null ? manualSeniority : calculateSeniority(speaker, target, relationships, persons);
+
+  // Apply the Respect Elevation Override Rule (>= +2 for Mayu ni a Mayu -> 99)
+  if (targetZone === 'Mayu ni a Mayu' && genDiff >= 2) {
+    genDiff = 99;
+  }
+
+  // 5. Evaluate Normal Rules with Fallback Cascade
+  return resolveTermForZone(targetZone, genDiff, seniority, termRules, sGender, tGender);
+};
+
 export const calculateAllKinshipTerms = (
   speaker,
   target,
@@ -786,6 +811,46 @@ export const calculateAllKinshipTerms = (
   defaultKinshipRules = null,
   isStranger = false
 ) => {
+  // A clan-only lookup (Kinship Lookup's synthetic "stranger" target) can
+  // legitimately match more than one alliance box at once -- the same clan
+  // may have taken a wife from the root clan in one marriage and given a
+  // "Mayu ni a Mayu" wife in a separate, unrelated one. A real, connected
+  // person's zone is already resolved unambiguously by their actual
+  // family-tree path (calculateKinshipTerm's structural-first resolution),
+  // so this only applies to the synthetic clan-only case, and only when
+  // isStranger is false (isStranger === true means "exclude tree connections
+  // entirely", which empties the boxes anyway).
+  if (target?.id === 'stranger' && target.clanId && !isStranger) {
+    const boxes = getKinshipBoxesForPerson(speaker.id, persons, relationships, kinshipRules, defaultKinshipRules);
+    if (manualZones) {
+      Object.entries(manualZones).forEach(([zone, clanIds]) => {
+        if (!boxes[zone] || !Array.isArray(clanIds)) return;
+        clanIds.forEach((clanId) => boxes[zone].add(clanId));
+      });
+    }
+    const matchedZones = Object.keys(boxes).filter((zone) => boxes[zone]?.has(target.clanId));
+
+    if (matchedZones.length > 1) {
+      const genDiff = manualGenDiff !== null ? manualGenDiff : calculateGenerationDiff(speaker.id, target.id, relationships, persons);
+      const seniority = manualSeniority !== null ? manualSeniority : calculateSeniority(speaker, target, relationships, persons);
+      const sGender = normG(speaker.gender);
+      const tGender = normG(target.gender);
+
+      const results = matchedZones
+        .map((zone) => {
+          // Same Respect Elevation Override Rule calculateKinshipTerm applies.
+          let effectiveGenDiff = genDiff;
+          if (zone === 'Mayu ni a Mayu' && effectiveGenDiff !== null && effectiveGenDiff >= 2) {
+            effectiveGenDiff = 99;
+          }
+          return resolveTermForZone(zone, effectiveGenDiff, seniority, termRules, sGender, tGender);
+        })
+        .filter(Boolean);
+
+      if (results.length > 0) return results;
+    }
+  }
+
   const res = calculateKinshipTerm(
     speaker,
     target,
