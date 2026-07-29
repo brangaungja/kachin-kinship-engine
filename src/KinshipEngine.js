@@ -42,6 +42,21 @@ export const DEFAULT_KINSHIP_BOX_RULES = [
   { sourceBox: 'Kahpu Kanau', targetBox: 'Dama', sourceGender: 'Female', targetGender: 'Male' },
   { sourceBox: 'Mayu', targetBox: 'Mayu ni a Mayu', sourceGender: 'Male', targetGender: 'Female' },
   { sourceBox: 'Dama', targetBox: 'Dama ni a Dama', sourceGender: 'Female', targetGender: 'Male' },
+  // Mayu ni a Dama / Dama ni a Mayu don't get a box of their own -- the marriage
+  // chain loops back to the speaker's own side, so both fold into Kahpu Kanau
+  // (see the elder-verification dossier's own documented remark on this).
+  // `foldBack` lets the Kahpu Kanau guard in getKinshipBoxesForPerson's
+  // tryMatch allow through only these two known-correct cascades, not an
+  // arbitrary future rule targeting Kahpu Kanau.
+  //
+  // A Mayu-zone woman marrying out (e.g. mother's sister) makes her husband's
+  // clan a wife-taker OF one of our Mayu clans -- "the Dama of my Mayu",
+  // i.e. Dama ni a Mayu ("a wife-taker of one of your wife-givers").
+  { sourceBox: 'Mayu', targetBox: 'Kahpu Kanau', sourceGender: 'Female', targetGender: 'Male', foldBack: true },
+  // A Dama-zone man marrying in makes her clan a wife-giver TO one of our
+  // Dama clans -- "the Mayu of my Dama", i.e. Mayu ni a Dama ("a wife-giver
+  // of one of your wife-takers").
+  { sourceBox: 'Dama', targetBox: 'Kahpu Kanau', sourceGender: 'Male', targetGender: 'Female', foldBack: true },
 ];
 
 // 1. Calculate Alliance Boxes relative to ANY speaker
@@ -89,8 +104,11 @@ export const getKinshipBoxesForPerson = (
              (rule.targetGender === 'Any' || targetP.gender === rule.targetGender) &&
              targetP.clanId && targetP.clanId !== rootClanId) {
 
-              // In Kachin culture, Kahpu Kanau alliance box is strictly for the root clan & explicit agnatic brother clans
-              if (rule.targetBox === 'Kahpu Kanau' && targetP.clanId !== rootClanId) {
+              // In Kachin culture, Kahpu Kanau alliance box is strictly for the root clan,
+              // explicit agnatic brother clans, and the Mayu-ni-a-Dama / Dama-ni-a-Mayu
+              // fold-back cascades (marked `foldBack` above) -- any other rule that would
+              // add a non-root clan to Kahpu Kanau is still blocked.
+              if (rule.targetBox === 'Kahpu Kanau' && targetP.clanId !== rootClanId && !rule.foldBack) {
                 return;
               }
 
@@ -449,6 +467,38 @@ const resolveTermForZone = (targetZone, genDiff, seniority, termRules, sGender, 
   };
 };
 
+// Canonical display/tie-break order for the 5 alliance zones -- own clan and
+// the two primary zones first, the extended/second-order zones last.
+const ZONE_DISPLAY_ORDER = ['Kahpu Kanau', 'Mayu', 'Dama', 'Mayu ni a Mayu', 'Dama ni a Dama'];
+
+// Ranks how confidently a clan's placement in `zone` should be trusted when
+// the same clan matches more than one alliance box at once (lower = higher
+// priority). Mirrors the priority order documented for elder review: the
+// speaker's own clan and the two primary zones first, then anything a person
+// deliberately configured (a per-tree manual override, or an admin's global
+// default rule), and only last the more speculative extended zones (Mayu ni a
+// Mayu / Dama ni a Dama) plus a Kahpu Kanau match that arrived via the
+// Mayu-ni-a-Dama / Dama-ni-a-Mayu fold-back cascade rather than being the
+// speaker's actual own clan.
+const rankZoneMatch = (zone, clanId, speakerClanId, manualZones, defaultKinshipRules) => {
+  if (zone === 'Kahpu Kanau' && clanId === speakerClanId) return 1;
+  if (zone === 'Mayu' || zone === 'Dama') return 1;
+  if (manualZones?.[zone]?.includes?.(clanId)) return 2;
+  const hasDefaultRule = (defaultKinshipRules || []).some((r) =>
+    (r.speakerClanId ?? r.speaker_clan_id) === speakerClanId
+    && (r.targetClanId ?? r.target_clan_id) === clanId
+    && (r.defaultAlliance ?? r.default_alliance) === zone);
+  if (hasDefaultRule) return 3;
+  return 4;
+};
+
+const sortZonesByPriority = (zones, clanId, speakerClanId, manualZones, defaultKinshipRules) => [...zones].sort((a, b) => {
+  const ta = rankZoneMatch(a, clanId, speakerClanId, manualZones, defaultKinshipRules);
+  const tb = rankZoneMatch(b, clanId, speakerClanId, manualZones, defaultKinshipRules);
+  if (ta !== tb) return ta - tb;
+  return ZONE_DISPLAY_ORDER.indexOf(a) - ZONE_DISPLAY_ORDER.indexOf(b);
+});
+
 // 4. Kinship Term Resolution
 export const calculateKinshipTerm = (
   speaker,
@@ -635,6 +685,35 @@ export const calculateKinshipTerm = (
           const parent = persons.find(p => p.id === pId);
           targetZone = parent?.gender === 'Female' ? (speaker.gender === 'Male' ? 'Dama' : 'Kahpu Kanau') : 'Kahpu Kanau';
         }
+
+        // Child of a Parent's Sibling (a true first cousin via an aunt/uncle --
+        // e.g. mother's sister's child) -- mirrors cases E/F's own logic for
+        // resolving the aunt/uncle (or their spouse) directly, since a cousin's
+        // patrilineal clan comes from whichever of their two parents is male.
+        if (!targetZone) {
+          const speakerParents = relationships
+            .filter(r => r.type === 'parent' && r.person2Id === speaker.id)
+            .map(r => r.person1Id);
+
+          for (const linkedParentId of speakerParents) {
+            const isParentSibling = areSiblings(linkedParentId, pId, relationships);
+            if (!isParentSibling) continue;
+
+            const linkedParent = persons.find(p => p.id === linkedParentId);
+            const auntUncle = persons.find(p => p.id === pId);
+            if (auntUncle?.gender === 'Male') {
+              // The aunt/uncle themself carries the cousin's clan forward.
+              targetZone = linkedParent?.gender === 'Female' ? 'Mayu' : 'Kahpu Kanau';
+            } else if (auntUncle?.gender === 'Female') {
+              // The aunt's husband carries the cousin's clan forward, not the
+              // aunt herself -- same fold-back as case F's "Spouse of a
+              // Parent's Sibling" (Mother's Sister's Husband -> Kahpu Kanau,
+              // Father's Sister's Husband -> Dama).
+              targetZone = linkedParent?.gender === 'Female' ? 'Kahpu Kanau' : 'Dama';
+            }
+            if (targetZone) break;
+          }
+        }
         if (targetZone) break;
       }
     }
@@ -702,20 +781,18 @@ export const calculateKinshipTerm = (
   //
   // A clan can legitimately belong to more than one box at once -- e.g. a wife's
   // brother's wife's clan is both Mayu (direct) and Mayu ni a Mayu (via the cascade),
-  // simultaneously and correctly. Resolving that by iterating `boxes` (an object) used
-  // to depend on JS key declaration order, an accident with no cultural basis. This
-  // explicit priority prefers the more specific/extended zone over its base zone --
-  // a narrow interim rule, not the full tie-break design (still open: which zone wins
-  // when a clan is in both Mayu and Dama, and surfacing real ambiguity to the user
-  // instead of always picking one silently).
+  // simultaneously and correctly. When that happens, `sortZonesByPriority` picks the
+  // most-trustworthy match: the speaker's own clan and the two primary zones first,
+  // then a manual override, then an admin default rule, and only last the extended
+  // zones (Mayu ni a Mayu / Dama ni a Dama) or a fold-back Kahpu Kanau match -- still
+  // a tie-break, not the full ambiguity design (see calculateAllKinshipTerms, which
+  // surfaces every matching zone instead of silently picking one for a clan-only
+  // lookup).
   if (!targetZone) {
-    const ZONE_PRIORITY = ['Mayu ni a Mayu', 'Dama ni a Dama', 'Kahpu Kanau', 'Mayu', 'Dama'];
     if (target.clanId) {
-      for (const zoneName of ZONE_PRIORITY) {
-        if (boxes[zoneName]?.has(target.clanId)) {
-          targetZone = zoneName;
-          break;
-        }
+      const matchingZones = ZONE_DISPLAY_ORDER.filter((zoneName) => boxes[zoneName]?.has(target.clanId));
+      if (matchingZones.length > 0) {
+        targetZone = sortZonesByPriority(matchingZones, target.clanId, speaker.clanId, manualZones, defaultKinshipRules)[0];
       }
     }
 
@@ -817,11 +894,21 @@ export const calculateAllKinshipTerms = (
   // "Mayu ni a Mayu" wife in a separate, unrelated one. A real, connected
   // person's zone is already resolved unambiguously by their actual
   // family-tree path (calculateKinshipTerm's structural-first resolution),
-  // so this only applies to the synthetic clan-only case, and only when
-  // isStranger is false (isStranger === true means "exclude tree connections
-  // entirely", which empties the boxes anyway).
-  if (target?.id === 'stranger' && target.clanId && !isStranger) {
-    const boxes = getKinshipBoxesForPerson(speaker.id, persons, relationships, kinshipRules, defaultKinshipRules);
+  // so this only applies to the synthetic clan-only case. This used to also
+  // require `!isStranger`, which hid this entirely whenever the "looking up
+  // someone outside my family tree" checkbox was on -- isStranger only means
+  // "exclude tree connections from the box cascade" (mirrored below exactly
+  // like calculateKinshipTerm's own internal call does), not "skip surfacing
+  // ambiguity"; manual overrides and admin default rules can still produce
+  // more than one matching zone either way.
+  if (target?.id === 'stranger' && target.clanId) {
+    const boxes = getKinshipBoxesForPerson(
+      speaker.id,
+      isStranger ? [] : persons,
+      isStranger ? [] : relationships,
+      kinshipRules,
+      defaultKinshipRules,
+    );
     if (manualZones) {
       Object.entries(manualZones).forEach(([zone, clanIds]) => {
         if (!boxes[zone] || !Array.isArray(clanIds)) return;
@@ -836,7 +923,11 @@ export const calculateAllKinshipTerms = (
       const sGender = normG(speaker.gender);
       const tGender = normG(target.gender);
 
-      const results = matchedZones
+      // Higher-priority zones (own clan, Mayu/Dama, then manual, then admin
+      // default rules) come first -- see sortZonesByPriority's own comment.
+      const orderedZones = sortZonesByPriority(matchedZones, target.clanId, speaker.clanId, manualZones, defaultKinshipRules);
+
+      const results = orderedZones
         .map((zone) => {
           // Same Respect Elevation Override Rule calculateKinshipTerm applies.
           let effectiveGenDiff = genDiff;
