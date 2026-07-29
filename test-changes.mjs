@@ -301,5 +301,44 @@ const termRules = [
   check('6. cousin DOB earlier than speaker -> resolves to elder (Kahpu)', resOlder?.youCallThem, 'Kahpu');
 }
 
+// ---------- Scenario 7: sibling-chain inheritance -- second cousin needs no DOB of their own ----------
+{
+  const seniorityTermRules = [
+    { engine_type: 'any', speaker_gender: 'any', alliance_zone: 'Kahpu Kanau', generation: 0, relative_age: 'older', target_gender: 'M', term_you_call_them: 'Kahpu', term_they_call_you: 'Kanau', cultural_notes: '', exception_flag: 'none' },
+    { engine_type: 'any', speaker_gender: 'any', alliance_zone: 'Kahpu Kanau', generation: 0, relative_age: 'younger', target_gender: 'M', term_you_call_them: 'Kanau', term_they_call_you: 'Kahpu', cultural_notes: '', exception_flag: 'none' },
+  ];
+
+  // Real reported scenario: Tung Child now has a real DOB (2000, resolves
+  // younger than speaker's 1994). Tung Child 2 has NO DOB, only a manual
+  // birthOrder placing him after Tung Child (as the app's own reorder flow
+  // would anchor it -- a value greater than her DOB-derived day-number).
+  const dobDayNumber = Math.floor(new Date('2000-01-01').getTime() / 86400000);
+  const persons = [
+    { id: 'S', gender: 'Male', clanId: 'K', dob: '1994-01-01' },
+    { id: 'F', gender: 'Male', clanId: 'K' },
+    { id: 'M', gender: 'Female', clanId: 'Lahtaw' },
+    { id: 'Tung', gender: 'Female', clanId: 'Lahtaw' },
+    { id: 'Wadi', gender: 'Male', clanId: 'Maran' },
+    { id: 'TungChild', gender: 'Female', clanId: 'Maran', dob: '2000-01-01' },
+    { id: 'TungChild2', gender: 'Male', clanId: 'Maran', birthOrder: dobDayNumber + 1000 },
+  ];
+  const relationships = [
+    { person1Id: 'F', person2Id: 'S', type: 'parent' },
+    { person1Id: 'M', person2Id: 'S', type: 'parent' },
+    { person1Id: 'F', person2Id: 'M', type: 'spouse' },
+    { person1Id: 'M', person2Id: 'Tung', type: 'sibling' },
+    { person1Id: 'Wadi', person2Id: 'Tung', type: 'spouse' },
+    { person1Id: 'Wadi', person2Id: 'TungChild', type: 'parent' },
+    { person1Id: 'Tung', person2Id: 'TungChild', type: 'parent' },
+    { person1Id: 'Wadi', person2Id: 'TungChild2', type: 'parent' },
+    { person1Id: 'Tung', person2Id: 'TungChild2', type: 'parent' },
+  ];
+  const speaker = persons.find((p) => p.id === 'S');
+  const tungChild2 = persons.find((p) => p.id === 'TungChild2');
+
+  const res = calculateKinshipTerm(speaker, tungChild2, persons, relationships, DEFAULT_KINSHIP_BOX_RULES, seniorityTermRules);
+  check('7. sibling-chain: Tung Child 2 inherits "younger" from Tung Child, no DOB of his own needed', res?.youCallThem, 'Kanau');
+}
+
 console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

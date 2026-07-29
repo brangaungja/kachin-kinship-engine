@@ -268,18 +268,39 @@ export const areSiblings = (p1Id, p2Id, relationships = []) => {
   return p1Parents.length > 0 && p1Parents.some(parentId => p2Parents.includes(parentId));
 };
 
-// 3. Seniority Calculation
-export const calculateSeniority = (speaker, target, relationships = [], persons = [], visitedSpouses = new Set()) => {
-  if (!speaker || !target || speaker.id === target.id) return 'unknown';
+// Same day-scale DOB/birth-order unification the app's own sibling reorder
+// UI uses (see the app's genealogyRules.js -- getSiblingOrderKey): a DOB
+// converts to a day-number and always outranks a manual birthOrder guess;
+// a manual birthOrder is anchored onto that same numeric scale by the app's
+// own reorder flow whenever a dated sibling exists in the group, so an
+// undated and a dated sibling remain meaningfully comparable here. Only
+// valid for comparing two people WITHIN the same sibling group -- birthOrder
+// alone has no shared meaning across two unrelated sibling groups, which is
+// why general (non-sibling) comparisons below stay DOB-only.
+const MS_PER_DAY = 86400000;
+const getSiblingOrderKey = (p) => {
+  if (!p) return null;
+  if (p.dob) {
+    const ms = new Date(p.dob).getTime();
+    if (Number.isFinite(ms)) return Math.floor(ms / MS_PER_DAY);
+  }
+  const raw = p.birthOrder ?? p.birth_order ?? p.birth_order_num ?? p.birthOrderNum;
+  if (raw === null || raw === undefined) return null;
+  const cleaned = String(raw).replace(/[^0-9]/g, '');
+  const num = parseInt(cleaned, 10);
+  return Number.isFinite(num) ? num : null;
+};
 
-  const getBirthOrder = (p) => {
-    if (!p) return null;
-    const raw = p.birthOrder ?? p.birth_order ?? p.birth_order_num ?? p.birthOrderNum;
-    if (raw === null || raw === undefined) return null;
-    const cleaned = String(raw).replace(/[^0-9]/g, '');
-    const num = parseInt(cleaned, 10);
-    return Number.isFinite(num) ? num : null;
-  };
+// 3. Seniority Calculation
+export const calculateSeniority = (
+  speaker,
+  target,
+  relationships = [],
+  persons = [],
+  visitedSpouses = new Set(),
+  visitedSiblingChain = new Set(),
+) => {
+  if (!speaker || !target || speaker.id === target.id) return 'unknown';
 
   // A. Check if target is a sibling of speaker's spouse (Wife's Sister / Wife's Brother / Husband's Sister)
   const speakerSpouseIds = relationships
@@ -293,19 +314,10 @@ export const calculateSeniority = (speaker, target, relationships = [], persons 
     // Check if target is a sibling of this spouse (explicit sibling or shared parents)
     const isSpouseSibling = areSiblings(spouseId, target.id, relationships);
     if (isSpouseSibling) {
-      // Compare target vs spouse by birthOrder first
-      const targetBO = getBirthOrder(target);
-      const spouseBO = getBirthOrder(spouse);
-      if (targetBO !== null && spouseBO !== null) {
-        if (targetBO > spouseBO) return 'younger';
-        if (targetBO < spouseBO) return 'older';
-      }
-      // Compare target vs spouse by DOB
-      if (spouse.dob && target.dob) {
-        const spDate = new Date(spouse.dob).getTime();
-        const tDate = new Date(target.dob).getTime();
-        if (spDate < tDate) return 'younger';
-        if (spDate > tDate) return 'older';
+      const targetKey = getSiblingOrderKey(target);
+      const spouseKey = getSiblingOrderKey(spouse);
+      if (targetKey !== null && spouseKey !== null && targetKey !== spouseKey) {
+        return targetKey > spouseKey ? 'younger' : 'older';
       }
     }
   }
@@ -313,26 +325,61 @@ export const calculateSeniority = (speaker, target, relationships = [], persons 
   // B. Check if target is a direct sibling of speaker
   const isDirectSibling = areSiblings(speaker.id, target.id, relationships);
   if (isDirectSibling) {
-    const targetBO = getBirthOrder(target);
-    const speakerBO = getBirthOrder(speaker);
-    if (targetBO !== null && speakerBO !== null) {
-      if (targetBO > speakerBO) return 'younger';
-      if (targetBO < speakerBO) return 'older';
-    }
-    if (speaker.dob && target.dob) {
-      const sDate = new Date(speaker.dob).getTime();
-      const tDate = new Date(target.dob).getTime();
-      if (sDate < tDate) return 'younger';
-      if (sDate > tDate) return 'older';
+    const targetKey = getSiblingOrderKey(target);
+    const speakerKey = getSiblingOrderKey(speaker);
+    if (targetKey !== null && speakerKey !== null && targetKey !== speakerKey) {
+      return targetKey > speakerKey ? 'younger' : 'older';
     }
   }
 
-  // C. General DOB comparison (speaker vs target)
+  // C. General DOB comparison (speaker vs target) -- DOB-only on purpose: a
+  // birthOrder value only has meaning within its own sibling group (cases A
+  // and B, above), not between two people from different families.
   if (speaker.dob && target.dob) {
     const sDate = new Date(speaker.dob).getTime();
     const tDate = new Date(target.dob).getTime();
     if (sDate < tDate) return 'younger';
     if (sDate > tDate) return 'older';
+  }
+
+  // D2. Sibling-chain inheritance: target's own DOB/birth order didn't
+  // resolve anything above, but if one of target's OWN siblings already has
+  // a resolved seniority relative to speaker, and target's relative
+  // position against that specific sibling is known, the same direction
+  // carries over -- a sibling born after someone already younger than you
+  // is also younger than you (and symmetrically for an elder sibling).
+  // Deliberately does NOT fire when the direction would be ambiguous (e.g.
+  // someone born before a sibling who is younger than you could be either
+  // older OR younger than you) -- unresolved stays unresolved rather than
+  // guessing. Cycle protection uses its own visited set, separate from
+  // case D's below, so the two recursions don't interfere with each other.
+  if (!visitedSiblingChain.has(target.id)) {
+    visitedSiblingChain.add(target.id);
+    const targetParentIds = relationships
+      .filter(r => r.type === 'parent' && r.person2Id === target.id)
+      .map(r => r.person1Id);
+    const targetSiblingIds = new Set();
+    targetParentIds.forEach((pId) => {
+      relationships
+        .filter(r => r.type === 'parent' && r.person1Id === pId && r.person2Id !== target.id)
+        .forEach((r) => targetSiblingIds.add(r.person2Id));
+    });
+
+    const targetKey = getSiblingOrderKey(target);
+    for (const siblingId of targetSiblingIds) {
+      if (visitedSiblingChain.has(siblingId)) continue;
+      const sibling = persons.find(p => p.id === siblingId);
+      if (!sibling) continue;
+
+      const siblingSeniority = calculateSeniority(speaker, sibling, relationships, persons, visitedSpouses, visitedSiblingChain);
+      if (siblingSeniority === 'unknown') continue;
+
+      const siblingKey = getSiblingOrderKey(sibling);
+      if (targetKey === null || siblingKey === null || targetKey === siblingKey) continue;
+
+      if (targetKey > siblingKey && siblingSeniority === 'younger') return 'younger';
+      if (targetKey < siblingKey && siblingSeniority === 'older') return 'older';
+    }
   }
 
   // D. In-law inheritance (spouse of a relative) with recursion cycle protection
@@ -346,7 +393,7 @@ export const calculateSeniority = (speaker, target, relationships = [], persons 
       if (visitedSpouses.has(spouseId)) continue;
       const spouse = persons.find(p => p.id === spouseId);
       if (spouse) {
-        const spouseSeniority = calculateSeniority(speaker, spouse, relationships, persons, visitedSpouses);
+        const spouseSeniority = calculateSeniority(speaker, spouse, relationships, persons, visitedSpouses, visitedSiblingChain);
         if (spouseSeniority !== 'unknown') return spouseSeniority;
       }
     }
