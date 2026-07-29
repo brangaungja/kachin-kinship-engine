@@ -511,20 +511,10 @@ export const calculateKinshipTerm = (
   manualSeniority = null,
   manualZones = null,
   defaultKinshipRules = null,
-  isStranger = false,
 ) => {
   if (!speaker || !target || speaker.id === target.id) return null;
 
   // 1. Calculate Alliance Zone
-  // Always built from the speaker's REAL tree data, even when isStranger is
-  // true -- which clans your own family's marriages have already placed in
-  // Mayu/Dama/etc. is a property of your tree, not of whether the specific
-  // person you're asking about is someone you know individually (otherwise
-  // even "what is my mother's clan to me" would return nothing in stranger
-  // mode, since the cascade that puts her clan in Mayu would never run).
-  // isStranger only skips the structural, individual-relationship-path
-  // checks below (a genuine stranger has no direct link to trace) and the
-  // real-clan-member shortcut (case K) -- not the clan-cascade zone boxes.
   const boxes = getKinshipBoxesForPerson(
     speaker.id,
     persons,
@@ -540,17 +530,19 @@ export const calculateKinshipTerm = (
   }
   let targetZone = null;
 
-  // 1. Structural Zone Inference from Family Tree (tried first, bypassed if
-  // isStranger === true). A real, direct family-tree relationship (parent,
-  // sibling, spouse, parent's sibling, etc.) always outranks the generic
-  // clan-level cascade below -- the clan boxes summarize marriages across the
-  // *whole* tree, so a clan can legitimately end up in more than one box (e.g.
-  // a completely unrelated marriage elsewhere puts it in "Mayu ni a Mayu" too).
-  // That's fine for a clan you have no direct link to, but for someone you're
-  // actually, individually connected to -- your mother's own sister is Mayu to
-  // you regardless of what some other branch's marriage did to her clan's box
-  // membership -- the direct path is the ground truth and must win.
-  if (!isStranger) {
+  // 1. Structural Zone Inference from Family Tree (tried first). A real,
+  // direct family-tree relationship (parent, sibling, spouse, parent's
+  // sibling, etc.) always outranks the generic clan-level cascade below --
+  // the clan boxes summarize marriages across the *whole* tree, so a clan
+  // can legitimately end up in more than one box (e.g. a completely
+  // unrelated marriage elsewhere puts it in "Mayu ni a Mayu" too). That's
+  // fine for a clan you have no direct link to, but for someone you're
+  // actually, individually connected to -- your mother's own sister is Mayu
+  // to you regardless of what some other branch's marriage did to her
+  // clan's box membership -- the direct path is the ground truth and must
+  // win. (Only reachable with a real target -- calculateAllKinshipTerms
+  // handles the clan-only lookup case, with no individual to trace, itself.)
+  {
     // A. Direct Parent
     const isDirectParent = relationships.some(r => r.type === 'parent' && r.person1Id === target.id && r.person2Id === speaker.id);
     if (isDirectParent) {
@@ -757,34 +749,12 @@ export const calculateKinshipTerm = (
         if (targetZone) break;
       }
     }
-
-    // K. Infer zone from existing tree relatives belonging to target.clanId if target is a mock/stranger object
-    if (!targetZone && target.clanId && target.id === 'stranger' && persons && persons.length > 0) {
-      const realClanPersons = persons.filter(p => p.clanId === target.clanId && p.id !== speaker.id && p.id !== target.id);
-      for (const realPerson of realClanPersons) {
-        const realRes = calculateKinshipTerm(
-          speaker,
-          realPerson,
-          persons,
-          relationships,
-          kinshipRules,
-          termRules,
-          null,
-          null,
-          manualZones,
-          defaultKinshipRules
-        );
-        if (realRes?.zone) {
-          targetZone = realRes.zone;
-          break;
-        }
-      }
-    }
   }
 
   // 1.5 Alliance Zone from clan cascade (fallback: only used when no direct
-  // family-tree relationship was found above -- e.g. a clan member you have
-  // no individual link to, or isStranger === true).
+  // family-tree relationship was found above -- e.g. a real target you have
+  // no individual link to, so the generic clan-level cascade is all that's
+  // left to go on).
   //
   // A clan can legitimately belong to more than one box at once -- e.g. a wife's
   // brother's wife's clan is both Mayu (direct) and Mayu ni a Mayu (via the cascade),
@@ -893,28 +863,28 @@ export const calculateAllKinshipTerms = (
   manualSeniority = null,
   manualZones = null,
   defaultKinshipRules = null,
-  isStranger = false
 ) => {
-  // A clan-only lookup (Kinship Lookup's synthetic "stranger" target) can
-  // legitimately match more than one alliance box at once -- the same clan
-  // may have taken a wife from the root clan in one marriage and given a
-  // "Mayu ni a Mayu" wife in a separate, unrelated one. A real, connected
-  // person's zone is already resolved unambiguously by their actual
-  // family-tree path (calculateKinshipTerm's structural-first resolution),
-  // so this only applies to the synthetic clan-only case. This used to also
-  // require `!isStranger`, which hid this entirely whenever the "looking up
-  // someone outside my family tree" checkbox was on -- isStranger doesn't
-  // affect this box lookup at all now (see calculateKinshipTerm's own call
-  // for why the cascade always uses real tree data), so ambiguity can
-  // surface either way; manual overrides and admin default rules can also
-  // independently produce more than one matching zone.
+  // A clan-only lookup (Kinship Lookup's synthetic target: a clan/gender with
+  // no real person behind it) is resolved purely from the same alliance
+  // boxes the Kinship Alliances dashboard shows -- marriage cascade + manual
+  // overrides -- rather than tracing an individual family-tree path (that's
+  // what calculateKinshipTerm's structural resolution is for, and it needs a
+  // real target with real relationship records to trace). This can
+  // legitimately match more than one box at once -- the same clan may have
+  // taken a wife from the root clan in one marriage and given a "Mayu ni a
+  // Mayu" wife in a separate, unrelated one -- in which case every matching
+  // zone is returned so the user can pick which one actually applies.
   if (target?.id === 'stranger' && target.clanId) {
+    // Built WITHOUT the admin default-rule merge (getKinshipBoxesForPerson
+    // would otherwise bake those directly into the same boxes) so a genuine
+    // cascade/manual match can be distinguished from "nothing matched, so
+    // fall back to the default rule" below.
     const boxes = getKinshipBoxesForPerson(
       speaker.id,
       persons,
       relationships,
       kinshipRules,
-      defaultKinshipRules,
+      null,
     );
     if (manualZones) {
       Object.entries(manualZones).forEach(([zone, clanIds]) => {
@@ -924,29 +894,31 @@ export const calculateAllKinshipTerms = (
     }
     const matchedZones = Object.keys(boxes).filter((zone) => boxes[zone]?.has(target.clanId));
 
-    if (matchedZones.length > 1) {
-      const genDiff = manualGenDiff !== null ? manualGenDiff : calculateGenerationDiff(speaker.id, target.id, relationships, persons);
-      const seniority = manualSeniority !== null ? manualSeniority : calculateSeniority(speaker, target, relationships, persons);
-      const sGender = normG(speaker.gender);
-      const tGender = normG(target.gender);
+    const genDiff = manualGenDiff !== null ? manualGenDiff : calculateGenerationDiff(speaker.id, target.id, relationships, persons);
+    const seniority = manualSeniority !== null ? manualSeniority : calculateSeniority(speaker, target, relationships, persons);
+    const sGender = normG(speaker.gender);
+    const tGender = normG(target.gender);
+    // Same Respect Elevation Override Rule calculateKinshipTerm applies.
+    const effectiveGenDiff = (zone) => (zone === 'Mayu ni a Mayu' && genDiff !== null && genDiff >= 2) ? 99 : genDiff;
 
+    if (matchedZones.length > 0) {
       // Higher-priority zones (own clan, Mayu/Dama, then manual, then admin
       // default rules) come first -- see sortZonesByPriority's own comment.
       const orderedZones = sortZonesByPriority(matchedZones, target.clanId, speaker.clanId, manualZones, defaultKinshipRules);
-
       const results = orderedZones
-        .map((zone) => {
-          // Same Respect Elevation Override Rule calculateKinshipTerm applies.
-          let effectiveGenDiff = genDiff;
-          if (zone === 'Mayu ni a Mayu' && effectiveGenDiff !== null && effectiveGenDiff >= 2) {
-            effectiveGenDiff = 99;
-          }
-          return resolveTermForZone(zone, effectiveGenDiff, seniority, termRules, sGender, tGender);
-        })
+        .map((zone) => resolveTermForZone(zone, effectiveGenDiff(zone), seniority, termRules, sGender, tGender))
         .filter(Boolean);
-
       if (results.length > 0) return results;
     }
+
+    // No box match at all -- fall back to the admin-configured default rule
+    // for this exact clan pair, if one exists.
+    const defaultZone = resolveDefaultAllianceZone(speaker.clanId, target.clanId, defaultKinshipRules);
+    if (defaultZone) {
+      const res = resolveTermForZone(defaultZone, effectiveGenDiff(defaultZone), seniority, termRules, sGender, tGender);
+      if (res) return [res];
+    }
+    return [];
   }
 
   const res = calculateKinshipTerm(
@@ -960,7 +932,6 @@ export const calculateAllKinshipTerms = (
     manualSeniority,
     manualZones,
     defaultKinshipRules,
-    isStranger
   );
   return res ? [res] : [];
 };
