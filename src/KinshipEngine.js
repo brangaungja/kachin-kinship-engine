@@ -516,12 +516,19 @@ export const calculateKinshipTerm = (
   if (!speaker || !target || speaker.id === target.id) return null;
 
   // 1. Calculate Alliance Zone
-  // When isStranger is true, pass empty arrays [] for persons & relationships
-  // so family tree graph connections are completely excluded.
+  // Always built from the speaker's REAL tree data, even when isStranger is
+  // true -- which clans your own family's marriages have already placed in
+  // Mayu/Dama/etc. is a property of your tree, not of whether the specific
+  // person you're asking about is someone you know individually (otherwise
+  // even "what is my mother's clan to me" would return nothing in stranger
+  // mode, since the cascade that puts her clan in Mayu would never run).
+  // isStranger only skips the structural, individual-relationship-path
+  // checks below (a genuine stranger has no direct link to trace) and the
+  // real-clan-member shortcut (case K) -- not the clan-cascade zone boxes.
   const boxes = getKinshipBoxesForPerson(
     speaker.id,
-    isStranger ? [] : persons,
-    isStranger ? [] : relationships,
+    persons,
+    relationships,
     kinshipRules,
     defaultKinshipRules,
   );
@@ -896,16 +903,16 @@ export const calculateAllKinshipTerms = (
   // family-tree path (calculateKinshipTerm's structural-first resolution),
   // so this only applies to the synthetic clan-only case. This used to also
   // require `!isStranger`, which hid this entirely whenever the "looking up
-  // someone outside my family tree" checkbox was on -- isStranger only means
-  // "exclude tree connections from the box cascade" (mirrored below exactly
-  // like calculateKinshipTerm's own internal call does), not "skip surfacing
-  // ambiguity"; manual overrides and admin default rules can still produce
-  // more than one matching zone either way.
+  // someone outside my family tree" checkbox was on -- isStranger doesn't
+  // affect this box lookup at all now (see calculateKinshipTerm's own call
+  // for why the cascade always uses real tree data), so ambiguity can
+  // surface either way; manual overrides and admin default rules can also
+  // independently produce more than one matching zone.
   if (target?.id === 'stranger' && target.clanId) {
     const boxes = getKinshipBoxesForPerson(
       speaker.id,
-      isStranger ? [] : persons,
-      isStranger ? [] : relationships,
+      persons,
+      relationships,
       kinshipRules,
       defaultKinshipRules,
     );
