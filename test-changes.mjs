@@ -253,5 +253,53 @@ const termRules = [
   check('R3. mother\'s brother\'s child -> Mayu', res?.zone, 'Mayu');
 }
 
+// ---------- Scenario 6: unknown seniority combines both terms instead of guessing 'older' ----------
+{
+  // Zone/generation-specific term rules WITH a real older/younger split, like
+  // the real Kahpu Kanau gen=0 rows in the admin's Kinship Dictionary.
+  const seniorityTermRules = [
+    { engine_type: 'any', speaker_gender: 'any', alliance_zone: 'Kahpu Kanau', generation: 0, relative_age: 'older', target_gender: 'M', term_you_call_them: 'Kahpu', term_they_call_you: 'Kanau', cultural_notes: '', exception_flag: 'none' },
+    { engine_type: 'any', speaker_gender: 'any', alliance_zone: 'Kahpu Kanau', generation: 0, relative_age: 'younger', target_gender: 'M', term_you_call_them: 'Kanau', term_they_call_you: 'Kahpu', cultural_notes: '', exception_flag: 'none' },
+  ];
+
+  // Mother's sister's child (cousin, genDiff=0), reported bug scenario:
+  // neither speaker nor cousin has a DOB, and we're deliberately NOT adding a
+  // linking-parent birth-order comparison (per the simplified design) -- so
+  // calculateSeniority has no basis at all and returns 'unknown'.
+  const persons = [
+    { id: 'S', gender: 'Male', clanId: 'K' },
+    { id: 'F', gender: 'Male', clanId: 'K' },
+    { id: 'M', gender: 'Female', clanId: 'Lahtaw', birthOrder: 2 },
+    { id: 'Tung', gender: 'Female', clanId: 'Lahtaw', birthOrder: 3 },
+    { id: 'Wadi', gender: 'Male', clanId: 'Maran' },
+    { id: 'TungChild', gender: 'Male', clanId: 'Maran' },
+  ];
+  const relationships = [
+    { person1Id: 'F', person2Id: 'S', type: 'parent' },
+    { person1Id: 'M', person2Id: 'S', type: 'parent' },
+    { person1Id: 'F', person2Id: 'M', type: 'spouse' },
+    { person1Id: 'M', person2Id: 'Tung', type: 'sibling' },
+    { person1Id: 'Wadi', person2Id: 'Tung', type: 'spouse' },
+    { person1Id: 'Wadi', person2Id: 'TungChild', type: 'parent' },
+    { person1Id: 'Tung', person2Id: 'TungChild', type: 'parent' },
+  ];
+  const speaker = persons.find((p) => p.id === 'S');
+  const cousin = persons.find((p) => p.id === 'TungChild');
+
+  const res = calculateKinshipTerm(speaker, cousin, persons, relationships, DEFAULT_KINSHIP_BOX_RULES, seniorityTermRules);
+  check('6. no DOB on either side -> combines both terms honestly', res?.youCallThem, 'Kahpu / Kanau');
+
+  // Once the cousin (and speaker) have a real DOB, the existing generic DOB
+  // comparison (speaker vs target directly) resolves it definitively.
+  const speakerWithDob = { ...speaker, dob: '1994-01-01' };
+  const youngerCousin = { ...cousin, dob: '2000-01-01' };
+  const resResolved = calculateKinshipTerm(speakerWithDob, youngerCousin, persons, relationships, DEFAULT_KINSHIP_BOX_RULES, seniorityTermRules);
+  check('6. cousin DOB later than speaker -> resolves to younger (Kanau)', resResolved?.youCallThem, 'Kanau');
+
+  const olderCousin = { ...cousin, dob: '1980-01-01' };
+  const resOlder = calculateKinshipTerm(speakerWithDob, olderCousin, persons, relationships, DEFAULT_KINSHIP_BOX_RULES, seniorityTermRules);
+  check('6. cousin DOB earlier than speaker -> resolves to elder (Kahpu)', resOlder?.youCallThem, 'Kahpu');
+}
+
 console.log(failures === 0 ? '\nALL PASSED' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

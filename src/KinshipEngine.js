@@ -434,8 +434,12 @@ const resolveTermForZone = (targetZone, genDiff, seniority, termRules, sGender, 
     if (rule.generation === normalizedGen) {
        // Exact generation match
        if (rule.relative_age !== 'any' && rule.relative_age !== 'Any') {
-          const effectiveSeniority = seniority === 'unknown' ? 'older' : seniority; // Default to older if unknown to avoid slash-joining
-          if (rule.relative_age === effectiveSeniority) {
+          // Unknown seniority (no DOB, birth order, or other signal available)
+          // matches EVERY age-specific rule at this generation rather than
+          // guessing -- the combine step below joins them with " / " (e.g.
+          // "Kahpu / Kanau"), an honest "could be either" instead of a
+          // confident but potentially wrong single answer.
+          if (seniority === 'unknown' || rule.relative_age === seniority) {
              exactMatches.push(rule);
           }
        } else {
