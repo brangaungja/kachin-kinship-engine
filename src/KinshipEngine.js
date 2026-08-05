@@ -800,6 +800,99 @@ export const calculateKinshipTerm = (
         if (targetZone) break;
       }
     }
+
+    // K. Ancestor or Descendant via a pure parent-chain (grandparent,
+    // great-grandparent, grandchild, ...). Unlike the direct-parent/child
+    // case (A/B), a multi-hop ancestor has no explicit rule of its own and
+    // used to fall through to the clan cascade below -- but that cascade can
+    // only classify someone's clan via a RECORDED SPOUSE relationship
+    // chaining back to the root's own clan. A grandparent added before their
+    // spouse exists in the tree (e.g. "add mother's mother" before "add
+    // mother's father") has no such chain yet, so targetZone stayed null and
+    // calculateKinshipTerm bailed out at the `if (!targetZone) return null`
+    // below -- even though the term at 2+ generations out doesn't actually
+    // depend on which zone is picked (every zone maps generation ±2 to the
+    // same Ji/Dwi/Kashu terms, and 3+ generations collapses to the
+    // zone-agnostic "any" sentinel). So we only need SOME valid zone here to
+    // unblock resolution, not the "correct" one -- assign it the same way
+    // branch A does for a direct parent, walking through whichever immediate
+    // parent leads toward the target.
+    if (!targetZone) {
+      const findChainZone = (fromId, toId, throughGender) => {
+        let frontier = relationships
+          .filter(r => r.type === 'parent' && r.person2Id === fromId)
+          .map(r => ({ id: r.person1Id, gender: persons.find(p => p.id === r.person1Id)?.gender }));
+        const seen = new Set(frontier.map(f => f.id));
+        let depth = 0;
+        while (frontier.length && depth < 8) {
+          for (const node of frontier) {
+            if (node.id === toId) {
+              return throughGender === 'Female' ? 'Mayu' : 'Kahpu Kanau';
+            }
+          }
+          const next = [];
+          for (const node of frontier) {
+            relationships
+              .filter(r => r.type === 'parent' && r.person2Id === node.id)
+              .forEach(r => {
+                if (!seen.has(r.person1Id)) {
+                  seen.add(r.person1Id);
+                  next.push({ id: r.person1Id, gender: node.gender });
+                }
+              });
+          }
+          frontier = next;
+          depth++;
+        }
+        return null;
+      };
+
+      const speakerParents = relationships
+        .filter(r => r.type === 'parent' && r.person2Id === speaker.id)
+        .map(r => ({ id: r.person1Id, gender: persons.find(p => p.id === r.person1Id)?.gender }));
+
+      for (const parent of speakerParents) {
+        if (parent.id === target.id) continue; // already handled by branch A
+        const zone = findChainZone(parent.id, target.id, parent.gender);
+        if (zone) {
+          targetZone = zone;
+          break;
+        }
+      }
+
+      // Descendant direction (grandchild, great-grandchild, ...): the
+      // Kachin term for a descendant doesn't vary by zone at any depth
+      // (Kahpu Kanau/Mayu/Dama all resolve to the same term at generation
+      // -2, and beyond that the "any zone" sentinel takes over), so
+      // Kahpu Kanau is a safe, zone-agnostic default.
+      if (!targetZone) {
+        const isDescendant = (fromId, toId) => {
+          let frontier = relationships.filter(r => r.type === 'parent' && r.person1Id === fromId).map(r => r.person2Id);
+          const seen = new Set(frontier);
+          let depth = 0;
+          while (frontier.length && depth < 8) {
+            if (frontier.includes(toId)) return true;
+            const next = [];
+            frontier.forEach(id => {
+              relationships
+                .filter(r => r.type === 'parent' && r.person1Id === id)
+                .forEach(r => {
+                  if (!seen.has(r.person2Id)) {
+                    seen.add(r.person2Id);
+                    next.push(r.person2Id);
+                  }
+                });
+            });
+            frontier = next;
+            depth++;
+          }
+          return false;
+        };
+        if (isDescendant(speaker.id, target.id)) {
+          targetZone = 'Kahpu Kanau';
+        }
+      }
+    }
   }
 
   // 1.5 Alliance Zone from clan cascade (fallback: only used when no direct
