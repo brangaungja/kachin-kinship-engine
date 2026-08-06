@@ -56,6 +56,19 @@ See `src/KinshipEngine.js` for full function signatures and inline comments
 on the less obvious rules (multi-box tie-break priority, the great-grandparent
 generation clamp, etc.).
 
+## Testing
+
+```
+npm install
+npm test
+```
+
+`src/KinshipEngine.test.js` covers generation/seniority math, the alliance-box
+cascade (including the Mayu-ni-a-Dama/Dama-ni-a-Mayu fold-back rules), and
+`calculateKinshipTerm`'s structural branches (direct relations, aunt/uncle,
+in-laws, cousins, ancestor/descendant chains). Run `npm run test:watch` while
+editing.
+
 ## Status
 
 Internal-use package shared between Kachin-Family and Kachin-Family-Admin.
