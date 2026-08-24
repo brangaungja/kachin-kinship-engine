@@ -143,8 +143,9 @@ const sibling = (aId, bId) => ({ type: 'sibling', person1Id: aId, person2Id: bId
 //        GF(K) === GM(MayuClan)
 //         |                    \
 //   Dad(K) === Mom(MayuClan)     DadSister(K) === DamaMan(DamaClan)
-//    |    \        \
+//    |    \        \                     +-- DadSisterChild(DamaClan) -- DadSisterGrandchild(DamaClan)
 //    |   MomBrother(MayuClan) === MomBroWife(InLawClan)
+//    |     +-- MomBrotherChild(MayuClan) -- MomBrotherGrandchild(MayuClan)
 //    |
 //    +-- RootOlderBro(K)
 //    +-- Root(K) === RootWife(WifeClan) [WifeFather(WifeClan) x WifeMother(InLawClan)]
@@ -157,9 +158,13 @@ const GM = female('GM', 'MayuClan');
 const Dad = male('Dad', 'K');
 const DadSister = female('DadSister', 'K');
 const DamaMan = male('DamaMan', 'DamaClan');
+const DadSisterChild = female('DadSisterChild', 'DamaClan');
+const DadSisterGrandchild = male('DadSisterGrandchild', 'DamaClan');
 const Mom = female('Mom', 'MayuClan');
 const MomBrother = male('MomBrother', 'MayuClan');
 const MomBroWife = female('MomBroWife', 'InLawClan');
+const MomBrotherChild = male('MomBrotherChild', 'MayuClan');
+const MomBrotherGrandchild = female('MomBrotherGrandchild', 'MayuClan');
 const Root = male('Root', 'K', { dob: '1990-01-01' });
 const RootOlderBro = male('RootOlderBro', 'K', { dob: '1985-01-01' });
 const RootYoungerSis = female('RootYoungerSis', 'K', { dob: '1995-01-01' });
@@ -174,7 +179,8 @@ const RootDaughter = female('RootDaughter', 'K');
 const Grandkid = male('Grandkid', 'K');
 
 const persons = [
-  GF, GM, Dad, DadSister, DamaMan, Mom, MomBrother, MomBroWife,
+  GF, GM, Dad, DadSister, DamaMan, DadSisterChild, DadSisterGrandchild,
+  Mom, MomBrother, MomBroWife, MomBrotherChild, MomBrotherGrandchild,
   Root, RootOlderBro, RootYoungerSis, RootSisterMarried, SisHusband, HusbandMother,
   RootWife, WifeFather, WifeMother, RootSon, RootDaughter, Grandkid,
 ];
@@ -182,7 +188,10 @@ const persons = [
 const relationships = [
   parent('GF', 'Dad'), parent('GM', 'Dad'), spouse('GF', 'GM'),
   parent('GF', 'DadSister'), parent('GM', 'DadSister'), spouse('DadSister', 'DamaMan'),
+  parent('DadSister', 'DadSisterChild'), parent('DamaMan', 'DadSisterChild'),
+  parent('DadSisterChild', 'DadSisterGrandchild'),
   sibling('Mom', 'MomBrother'), spouse('MomBrother', 'MomBroWife'),
+  parent('MomBrother', 'MomBrotherChild'), parent('MomBrotherChild', 'MomBrotherGrandchild'),
   spouse('Dad', 'Mom'),
   parent('Dad', 'Root'), parent('Mom', 'Root'),
   parent('Dad', 'RootOlderBro'), parent('Mom', 'RootOlderBro'),
@@ -242,6 +251,10 @@ describe('Mock family tree: Mayu (wife-giving side)', () => {
   it("wife's father -> Katsa (heads the wife's own clan, same zone as the wife)", () => {
     expect(term(Root, WifeFather)).toBe('Katsa');
   });
+
+  it("mother's brother's grandchild -> Kanam (gen -1 in the zone, reached via the clan-cascade fallback since no named branch covers a collateral relative's own descendant)", () => {
+    expect(term(Root, MomBrotherGrandchild)).toBe('Kanam');
+  });
 });
 
 describe('Mock family tree: Dama (wife-taking side)', () => {
@@ -251,6 +264,10 @@ describe('Mock family tree: Dama (wife-taking side)', () => {
 
   it("sister's husband -> Kahkau (spouse of a direct sibling)", () => {
     expect(term(Root, SisHusband)).toBe('Kahkau');
+  });
+
+  it("father's sister's grandchild -> Kahkri (gen -1 in the zone, same clan-cascade fallback as the Mayu case above)", () => {
+    expect(term(Root, DadSisterGrandchild)).toBe('Kahkri');
   });
 });
 
