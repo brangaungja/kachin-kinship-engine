@@ -893,6 +893,30 @@ export const calculateKinshipTerm = (
         }
       }
     }
+
+    // L. Parent of a Spouse (Wife's Father / Mother, Husband's Father /
+    // Mother). The parent who heads the spouse's own clan (their father, in
+    // this patrilineal system) shares the spouse's own zone (see D. Direct
+    // Spouse). The other parent married INTO that clan from their own natal
+    // clan -- same "in-marrying spouse" pattern as branches F/H -- one hop
+    // further out, hence "ni a" (Mayu ni a Mayu / Dama ni a Dama) instead of
+    // the direct zone.
+    if (!targetZone) {
+      const speakerSpouseIds = relationships
+        .filter(r => r.type === 'spouse' && (r.person1Id === speaker.id || r.person2Id === speaker.id))
+        .map(r => r.person1Id === speaker.id ? r.person2Id : r.person1Id);
+
+      for (const spouseId of speakerSpouseIds) {
+        const isSpousesParent = relationships.some(r => r.type === 'parent' && r.person2Id === spouseId && r.person1Id === target.id);
+        if (!isSpousesParent) continue;
+
+        const headsSpousesClan = target.gender !== 'Female';
+        targetZone = speaker.gender === 'Male'
+          ? (headsSpousesClan ? 'Mayu' : 'Mayu ni a Mayu')
+          : (headsSpousesClan ? 'Dama' : 'Dama ni a Dama');
+        break;
+      }
+    }
   }
 
   // 1.5 Alliance Zone from clan cascade (fallback: only used when no direct
@@ -927,17 +951,12 @@ export const calculateKinshipTerm = (
   }
 
   // 2. Pre-calculate direct relations for exceptions
-  let isSpouseParent = false;
   let isDirectSpouse = false;
 
   const speakerSpouses = relationships.filter(r => r.type === 'spouse' && (r.person1Id === speaker.id || r.person2Id === speaker.id)).map(r => r.person1Id === speaker.id ? r.person2Id : r.person1Id);
 
   if (speakerSpouses.includes(target.id)) {
     isDirectSpouse = true;
-  }
-
-  if (speakerSpouses.length > 0) {
-    isSpouseParent = relationships.some(r => r.type === 'parent' && speakerSpouses.includes(r.person2Id) && r.person1Id === target.id);
   }
 
   // A sister's child gets its own distinct term (maternal uncle vs. paternal
@@ -960,7 +979,6 @@ export const calculateKinshipTerm = (
     if (rSpeakerG !== 'ANY' && rSpeakerG !== sGender && r.engine_type !== 'independent') return false;
 
     if (r.exception_flag === 'direct_spouse' && isDirectSpouse) return true;
-    if (r.exception_flag === 'direct_mother_in_law' && isSpouseParent && tGender === 'F') return true;
     if (r.exception_flag === 'direct_female_sibling_child' && isSistersChild) return true;
 
     return false;

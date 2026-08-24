@@ -267,6 +267,39 @@ describe('calculateKinshipTerm: structural branches (aunt/uncle, cousins, in-law
     const res = calculateKinshipTerm(persons[0], persons[5], persons, rels, DEFAULT_KINSHIP_BOX_RULES, ZONE_ONLY_TERM_RULES);
     expect(res?.zone).toBe('Mayu');
   });
+
+  // A spouse's parent has no exception-flag rule anymore (removed -- the
+  // team decided the zone system, not a hardcoded exception, is the source
+  // of truth for this relationship). The father who heads the spouse's own
+  // clan shares the spouse's zone; the in-marrying mother is one hop
+  // further out, same "ni a" pattern as branches F/H.
+  it("resolves a wife's father to Mayu (same zone as the wife herself)", () => {
+    const persons = [male('S', 'K'), female('W', 'WifeClan'), male('WF', 'WifeClan')];
+    const rels = [spouse('S', 'W'), parent('WF', 'W')];
+    const res = calculateKinshipTerm(persons[0], persons[2], persons, rels, DEFAULT_KINSHIP_BOX_RULES, ZONE_ONLY_TERM_RULES);
+    expect(res?.zone).toBe('Mayu');
+  });
+
+  it("resolves a wife's mother to Mayu ni a Mayu (married into the wife's father's clan)", () => {
+    const persons = [male('S', 'K'), female('W', 'WifeClan'), female('WM', 'InLawClan')];
+    const rels = [spouse('S', 'W'), parent('WM', 'W')];
+    const res = calculateKinshipTerm(persons[0], persons[2], persons, rels, DEFAULT_KINSHIP_BOX_RULES, ZONE_ONLY_TERM_RULES);
+    expect(res?.zone).toBe('Mayu ni a Mayu');
+  });
+
+  it("resolves a husband's mother to Dama ni a Dama (mirrors the wife's-mother case for a female speaker)", () => {
+    const persons = [female('S', 'K'), male('H', 'HusbandClan'), female('HM', 'InLawClan')];
+    const rels = [spouse('S', 'H'), parent('HM', 'H')];
+    const res = calculateKinshipTerm(persons[0], persons[2], persons, rels, DEFAULT_KINSHIP_BOX_RULES, ZONE_ONLY_TERM_RULES);
+    expect(res?.zone).toBe('Dama ni a Dama');
+  });
+
+  it("resolves a husband's father to Dama (same zone as the husband himself)", () => {
+    const persons = [female('S', 'K'), male('H', 'HusbandClan'), male('HF', 'HusbandClan')];
+    const rels = [spouse('S', 'H'), parent('HF', 'H')];
+    const res = calculateKinshipTerm(persons[0], persons[2], persons, rels, DEFAULT_KINSHIP_BOX_RULES, ZONE_ONLY_TERM_RULES);
+    expect(res?.zone).toBe('Dama');
+  });
 });
 
 describe('calculateKinshipTerm: ancestor/descendant chains (grandparent fix)', () => {
