@@ -959,13 +959,6 @@ export const calculateKinshipTerm = (
     isDirectSpouse = true;
   }
 
-  // A sister's child gets its own distinct term (maternal uncle vs. paternal
-  // uncle) -- unlike a brother's child, who stays inside the speaker's own
-  // patrilineal line and is already covered by the generation-based engines.
-  const speakerSiblingIds = persons.filter(p => p.id !== speaker.id && areSiblings(speaker.id, p.id, relationships)).map(p => p.id);
-  const speakerSisterIds = speakerSiblingIds.filter(id => persons.find(p => p.id === id)?.gender === 'Female');
-  const isSistersChild = speakerSisterIds.length > 0 && relationships.some(r => r.type === 'parent' && speakerSisterIds.includes(r.person1Id) && r.person2Id === target.id);
-
   const sGender = normG(speaker.gender);
   const tGender = normG(target.gender);
 
@@ -979,7 +972,6 @@ export const calculateKinshipTerm = (
     if (rSpeakerG !== 'ANY' && rSpeakerG !== sGender && r.engine_type !== 'independent') return false;
 
     if (r.exception_flag === 'direct_spouse' && isDirectSpouse) return true;
-    if (r.exception_flag === 'direct_female_sibling_child' && isSistersChild) return true;
 
     return false;
   });

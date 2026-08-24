@@ -1,0 +1,292 @@
+import { describe, it, expect } from 'vitest';
+import { calculateKinshipTerm, getKinshipBoxesForPerson, DEFAULT_KINSHIP_BOX_RULES } from './KinshipEngine.js';
+
+// A snapshot of the app's REAL kinship_term_rules table (pulled from a live,
+// signed-in session's cache on 2026-08-24) -- not hand-picked or invented.
+// KinshipEngine.test.js's REAL_TERM_RULES is a deliberately trimmed slice for
+// isolated branch tests; this is the full production rule set, used here so
+// a single realistic family tree can be checked against the actual terms
+// users see, including the two extended zones (Mayu ni a Mayu, Dama ni a
+// Dama).
+//
+// Dama ni a Dama originally shipped as two pure generation-wildcard rows
+// (generation 99/-99, "any" target gender). Building this fixture surfaced a
+// real engine collision: resolveTermForZone's wildcard tier doesn't
+// distinguish a zone's OWN wildcard rule from the unrelated global
+// "alliance_zone: any" gen-99 fallback rows -- both match simultaneously and
+// get combined with " / ", so a Dama-ni-a-Dama lookup was returning e.g.
+// "Dwi / Kashu" instead of the intended single "Kashu". Fixed on the data
+// side (matching Mayu ni a Mayu's own existing pattern) by adding explicit
+// per-generation rows (2, 1, 0, -1, -2, all repeating the same "Kashu" term)
+// so real lookups hit an EXACT generation match and never reach the
+// colliding wildcard tier. This still leaves a narrow, unclosed edge case
+// beyond generation +/-2 (e.g. a husband's grandmother) where the same
+// collision could reappear -- rare enough to accept for now; the full fix
+// would be an engine change to prioritize a zone's own wildcard over the
+// generic one.
+const PRODUCTION_TERM_RULES_SNAPSHOT = [
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Kahpu Kanau', generation: 2, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Ji', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Kahpu Kanau', generation: 1, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kawa', term_they_call_you: 'Kasha', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Kahpu Kanau', generation: 0, relative_age: 'older', target_gender: 'M', term_you_call_them: 'Kahpu', term_they_call_you: 'Kanau', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Kahpu Kanau', generation: 0, relative_age: 'younger', target_gender: 'M', term_you_call_them: 'Kanau', term_they_call_you: 'Kahpu', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Kahpu Kanau', generation: -1, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kasha', term_they_call_you: 'Kawa', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Kahpu Kanau', generation: -2, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kashu', term_they_call_you: 'Ji', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Kahpu Kanau', generation: 2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Dwi', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Kahpu Kanau', generation: 1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kamoi', term_they_call_you: 'Kanam', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Kahpu Kanau', generation: 0, relative_age: 'older', target_gender: 'F', term_you_call_them: 'Kana', term_they_call_you: 'Kanau', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Kahpu Kanau', generation: 0, relative_age: 'younger', target_gender: 'F', term_you_call_them: 'Kanau', term_they_call_you: 'Kahpu', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Kahpu Kanau', generation: -1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kasha', term_they_call_you: 'Kawa', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Kahpu Kanau', generation: -2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kashu', term_they_call_you: 'Ji', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu', generation: 2, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Ji', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu', generation: 1, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Katsa', term_they_call_you: 'Kahkri', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu', generation: 0, relative_age: 'older', target_gender: 'M', term_you_call_them: 'Kahkau', term_they_call_you: 'Kahkau', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu', generation: 0, relative_age: 'younger', target_gender: 'M', term_you_call_them: 'Kahkau', term_they_call_you: 'Kahkau', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu', generation: -1, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kanam', term_they_call_you: 'Kagu', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu', generation: -2, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kashu', term_they_call_you: 'Ji', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu', generation: 2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Dwi', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu', generation: 1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kanu', term_they_call_you: 'Kasha', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu', generation: 0, relative_age: 'older', target_gender: 'F', term_you_call_them: 'Karat', term_they_call_you: 'Karat', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu', generation: 0, relative_age: 'younger', target_gender: 'F', term_you_call_them: 'Kanam', term_they_call_you: 'Kagu', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu', generation: -1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kanam', term_they_call_you: 'Kagu', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu', generation: -2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kashu', term_they_call_you: 'Ji', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama', generation: 2, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Ji', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama', generation: 1, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kagu', term_they_call_you: 'Kanam', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama', generation: 0, relative_age: 'older', target_gender: 'M', term_you_call_them: 'Kahkau', term_they_call_you: 'Kahkau', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama', generation: 0, relative_age: 'younger', target_gender: 'M', term_you_call_them: 'Kahkau', term_they_call_you: 'Kahkau', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama', generation: -1, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kahkri', term_they_call_you: 'Katsa', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama', generation: -2, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kashu', term_they_call_you: 'Ji', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama', generation: 2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Dwi', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama', generation: 1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kahkri', term_they_call_you: 'Katsa', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama', generation: 0, relative_age: 'older', target_gender: 'F', term_you_call_them: 'Karat', term_they_call_you: 'Karat', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama', generation: 0, relative_age: 'younger', target_gender: 'F', term_you_call_them: 'Kahkri', term_they_call_you: 'Kahkri', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama', generation: -1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kahkri', term_they_call_you: 'Katsa', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama', generation: -2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kashu', term_they_call_you: 'Ji', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Kahpu Kanau', generation: 2, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Ji', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Kahpu Kanau', generation: 1, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kawa', term_they_call_you: 'Kasha', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Kahpu Kanau', generation: 0, relative_age: 'older', target_gender: 'M', term_you_call_them: 'Kana', term_they_call_you: 'Kanau', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Kahpu Kanau', generation: 0, relative_age: 'younger', target_gender: 'M', term_you_call_them: 'Kanau', term_they_call_you: 'Kana', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Kahpu Kanau', generation: -1, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kanam', term_they_call_you: 'Kamoi', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Kahpu Kanau', generation: -2, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kashu', term_they_call_you: 'Dwi', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Kahpu Kanau', generation: 2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Dwi', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Kahpu Kanau', generation: 1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kamoi', term_they_call_you: 'Kanam', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Kahpu Kanau', generation: 0, relative_age: 'older', target_gender: 'F', term_you_call_them: 'Kana', term_they_call_you: 'Kanau', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Kahpu Kanau', generation: 0, relative_age: 'younger', target_gender: 'F', term_you_call_them: 'Kanau', term_they_call_you: 'Kana', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Kahpu Kanau', generation: -1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kanam', term_they_call_you: 'Kamoi', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Kahpu Kanau', generation: -2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kashu', term_they_call_you: 'Dwi', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu', generation: 2, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Ji', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu', generation: 1, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Katsa', term_they_call_you: 'Kahkri', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu', generation: 0, relative_age: 'older', target_gender: 'M', term_you_call_them: 'Karat', term_they_call_you: 'Karat', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu', generation: 0, relative_age: 'younger', target_gender: 'M', term_you_call_them: 'Kagu', term_they_call_you: 'Kanam', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu', generation: -1, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kanam', term_they_call_you: 'Kagu', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu', generation: -2, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kashu', term_they_call_you: 'Dwi', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu', generation: 2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Dwi', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu', generation: 1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kanu', term_they_call_you: 'Kasha', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu', generation: 0, relative_age: 'older', target_gender: 'F', term_you_call_them: 'Kaning', term_they_call_you: 'Kaning', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu', generation: 0, relative_age: 'younger', target_gender: 'F', term_you_call_them: 'Kaning', term_they_call_you: 'Kaning', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu', generation: -1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kaning', term_they_call_you: 'Kaning', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu', generation: -2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kashu', term_they_call_you: 'Dwi', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama', generation: 2, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Ji', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama', generation: 1, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kagu', term_they_call_you: 'Kanam', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama', generation: 0, relative_age: 'older', target_gender: 'M', term_you_call_them: 'Kagu', term_they_call_you: 'Kanam', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama', generation: 0, relative_age: 'younger', target_gender: 'M', term_you_call_them: 'Karat', term_they_call_you: 'Karat', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama', generation: -1, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kasha', term_they_call_you: 'Kanu', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama', generation: -2, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Kashu', term_they_call_you: 'Dwi', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama', generation: 2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Dwi', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama', generation: 1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kaning', term_they_call_you: 'Kaning', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama', generation: 0, relative_age: 'older', target_gender: 'F', term_you_call_them: 'Kaning', term_they_call_you: 'Kaning', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama', generation: 0, relative_age: 'younger', target_gender: 'F', term_you_call_them: 'Kaning', term_they_call_you: 'Kaning', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama', generation: -1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kasha', term_they_call_you: 'Kanu', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama', generation: -2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Dwi', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'independent', speaker_gender: 'any', alliance_zone: 'any', generation: 99, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Ji', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'independent', speaker_gender: 'any', alliance_zone: 'any', generation: 99, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Dwi', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'independent', speaker_gender: 'any', alliance_zone: 'any', generation: 0, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Madu Jan', term_they_call_you: 'Madu Wa', exception_flag: 'direct_spouse' },
+  { engine_type: 'independent', speaker_gender: 'any', alliance_zone: 'any', generation: 0, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Madu Wa', term_they_call_you: 'Madu Jan', exception_flag: 'direct_spouse' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'any', generation: 0, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Madu Jan', term_they_call_you: 'Madu Wa', exception_flag: 'direct_spouse' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'any', generation: 0, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Madu Wa', term_they_call_you: 'Madu Jan', exception_flag: 'direct_spouse' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu ni a Mayu', generation: 99, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Ji', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu ni a Mayu', generation: 99, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Dwi', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu ni a Mayu', generation: 1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kani', term_they_call_you: 'Kahkri', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu ni a Mayu', generation: 0, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kani', term_they_call_you: 'Kahkri', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu ni a Mayu', generation: -1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kani', term_they_call_you: 'Kahkri', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Mayu ni a Mayu', generation: -2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kani', term_they_call_you: 'Kahkri', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu ni a Mayu', generation: 99, relative_age: 'any', target_gender: 'M', term_you_call_them: 'Ji', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu ni a Mayu', generation: 99, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Dwi', term_they_call_you: 'Kashu', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu ni a Mayu', generation: 1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kani', term_they_call_you: 'Kahkri', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu ni a Mayu', generation: 0, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kani', term_they_call_you: 'Kahkri', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu ni a Mayu', generation: -1, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kani', term_they_call_you: 'Kahkri', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Mayu ni a Mayu', generation: -2, relative_age: 'any', target_gender: 'F', term_you_call_them: 'Kani', term_they_call_you: 'Kahkri', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama ni a Dama', generation: 2, relative_age: 'any', target_gender: 'any', term_you_call_them: 'Kashu', term_they_call_you: 'Ji', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama ni a Dama', generation: 1, relative_age: 'any', target_gender: 'any', term_you_call_them: 'Kashu', term_they_call_you: 'Ji', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama ni a Dama', generation: 0, relative_age: 'any', target_gender: 'any', term_you_call_them: 'Kashu', term_they_call_you: 'Ji', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama ni a Dama', generation: -1, relative_age: 'any', target_gender: 'any', term_you_call_them: 'Kashu', term_they_call_you: 'Ji', exception_flag: 'none' },
+  { engine_type: 'male', speaker_gender: 'M', alliance_zone: 'Dama ni a Dama', generation: -2, relative_age: 'any', target_gender: 'any', term_you_call_them: 'Kashu', term_they_call_you: 'Ji', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama ni a Dama', generation: 2, relative_age: 'any', target_gender: 'any', term_you_call_them: 'Kashu', term_they_call_you: 'Dwi', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama ni a Dama', generation: 1, relative_age: 'any', target_gender: 'any', term_you_call_them: 'Kashu', term_they_call_you: 'Dwi', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama ni a Dama', generation: 0, relative_age: 'any', target_gender: 'any', term_you_call_them: 'Kashu', term_they_call_you: 'Dwi', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama ni a Dama', generation: -1, relative_age: 'any', target_gender: 'any', term_you_call_them: 'Kashu', term_they_call_you: 'Dwi', exception_flag: 'none' },
+  { engine_type: 'female', speaker_gender: 'F', alliance_zone: 'Dama ni a Dama', generation: -2, relative_age: 'any', target_gender: 'any', term_you_call_them: 'Kashu', term_they_call_you: 'Dwi', exception_flag: 'none' },
+];
+
+const mk = (gender) => (id, clanId, extra = {}) => ({ id, gender, clanId, ...extra });
+const male = mk('Male');
+const female = mk('Female');
+const parent = (parentId, childId) => ({ type: 'parent', person1Id: parentId, person2Id: childId });
+const spouse = (aId, bId) => ({ type: 'spouse', person1Id: aId, person2Id: bId });
+const sibling = (aId, bId) => ({ type: 'sibling', person1Id: aId, person2Id: bId });
+
+// One deliberately-constructed, internally-consistent family, three
+// generations deep, spanning six clans -- built to exercise every alliance
+// zone (including the two extended "ni a" zones) through real tree
+// structure rather than isolated one-off fixtures. See the per-`it` comments
+// below for which relationship and branch each person is standing in for.
+//
+//        GF(K) === GM(MayuClan)
+//         |                    \
+//   Dad(K) === Mom(MayuClan)     DadSister(K) === DamaMan(DamaClan)
+//    |    \        \
+//    |   MomBrother(MayuClan) === MomBroWife(InLawClan)
+//    |
+//    +-- RootOlderBro(K)
+//    +-- Root(K) === RootWife(WifeClan) [WifeFather(WifeClan) x WifeMother(InLawClan)]
+//    |     +-- RootSon(K) -- Grandkid(K)
+//    |     +-- RootDaughter(K)
+//    +-- RootYoungerSis(K)
+//    +-- RootSisterMarried(K) === SisHusband(HusbandClan) [-- HusbandMother(HusbandInLawClan)]
+const GF = male('GF', 'K');
+const GM = female('GM', 'MayuClan');
+const Dad = male('Dad', 'K');
+const DadSister = female('DadSister', 'K');
+const DamaMan = male('DamaMan', 'DamaClan');
+const Mom = female('Mom', 'MayuClan');
+const MomBrother = male('MomBrother', 'MayuClan');
+const MomBroWife = female('MomBroWife', 'InLawClan');
+const Root = male('Root', 'K', { dob: '1990-01-01' });
+const RootOlderBro = male('RootOlderBro', 'K', { dob: '1985-01-01' });
+const RootYoungerSis = female('RootYoungerSis', 'K', { dob: '1995-01-01' });
+const RootSisterMarried = female('RootSisterMarried', 'K', { dob: '1980-01-01' });
+const SisHusband = male('SisHusband', 'HusbandClan');
+const HusbandMother = female('HusbandMother', 'HusbandInLawClan');
+const RootWife = female('RootWife', 'WifeClan');
+const WifeFather = male('WifeFather', 'WifeClan');
+const WifeMother = female('WifeMother', 'InLawClan');
+const RootSon = male('RootSon', 'K');
+const RootDaughter = female('RootDaughter', 'K');
+const Grandkid = male('Grandkid', 'K');
+
+const persons = [
+  GF, GM, Dad, DadSister, DamaMan, Mom, MomBrother, MomBroWife,
+  Root, RootOlderBro, RootYoungerSis, RootSisterMarried, SisHusband, HusbandMother,
+  RootWife, WifeFather, WifeMother, RootSon, RootDaughter, Grandkid,
+];
+
+const relationships = [
+  parent('GF', 'Dad'), parent('GM', 'Dad'), spouse('GF', 'GM'),
+  parent('GF', 'DadSister'), parent('GM', 'DadSister'), spouse('DadSister', 'DamaMan'),
+  sibling('Mom', 'MomBrother'), spouse('MomBrother', 'MomBroWife'),
+  spouse('Dad', 'Mom'),
+  parent('Dad', 'Root'), parent('Mom', 'Root'),
+  parent('Dad', 'RootOlderBro'), parent('Mom', 'RootOlderBro'),
+  parent('Dad', 'RootYoungerSis'), parent('Mom', 'RootYoungerSis'),
+  parent('Dad', 'RootSisterMarried'), parent('Mom', 'RootSisterMarried'),
+  spouse('RootSisterMarried', 'SisHusband'), parent('HusbandMother', 'SisHusband'),
+  spouse('Root', 'RootWife'),
+  parent('WifeFather', 'RootWife'), parent('WifeMother', 'RootWife'), spouse('WifeFather', 'WifeMother'),
+  parent('Root', 'RootSon'), parent('RootWife', 'RootSon'),
+  parent('Root', 'RootDaughter'), parent('RootWife', 'RootDaughter'),
+  parent('RootSon', 'Grandkid'),
+];
+
+const term = (speaker, target) => calculateKinshipTerm(
+  speaker, target, persons, relationships, DEFAULT_KINSHIP_BOX_RULES, PRODUCTION_TERM_RULES_SNAPSHOT,
+)?.youCallThem;
+
+describe('Mock family tree: Kahpu Kanau (own patriline)', () => {
+  it('grandfather -> Ji, grandmother -> Dwi (zone-invariant gen+2)', () => {
+    expect(term(Root, GF)).toBe('Ji');
+    expect(term(Root, GM)).toBe('Dwi');
+  });
+
+  it('father -> Kawa (direct parent)', () => {
+    expect(term(Root, Dad)).toBe('Kawa');
+  });
+
+  it("father's sister -> Kamoi (parent's sibling, father's side)", () => {
+    expect(term(Root, DadSister)).toBe('Kamoi');
+  });
+
+  it('older brother -> Kahpu, younger sister -> Kanau, older sister -> Kana (sibling seniority by DOB)', () => {
+    expect(term(Root, RootOlderBro)).toBe('Kahpu');
+    expect(term(Root, RootYoungerSis)).toBe('Kanau');
+    expect(term(Root, RootSisterMarried)).toBe('Kana');
+  });
+
+  it('son and daughter -> Kasha (direct children, both genders)', () => {
+    expect(term(Root, RootSon)).toBe('Kasha');
+    expect(term(Root, RootDaughter)).toBe('Kasha');
+  });
+
+  it('grandchild -> Kashu (zone-invariant gen-2)', () => {
+    expect(term(Root, Grandkid)).toBe('Kashu');
+  });
+});
+
+describe('Mock family tree: Mayu (wife-giving side)', () => {
+  it("mother -> Kanu (direct parent, female)", () => {
+    expect(term(Root, Mom)).toBe('Kanu');
+  });
+
+  it("mother's brother -> Katsa (parent's sibling, mother's side)", () => {
+    expect(term(Root, MomBrother)).toBe('Katsa');
+  });
+
+  it("wife's father -> Katsa (heads the wife's own clan, same zone as the wife)", () => {
+    expect(term(Root, WifeFather)).toBe('Katsa');
+  });
+});
+
+describe('Mock family tree: Dama (wife-taking side)', () => {
+  it("father's sister's husband -> Kagu (spouse of a parent's sibling, father's side)", () => {
+    expect(term(Root, DamaMan)).toBe('Kagu');
+  });
+
+  it("sister's husband -> Kahkau (spouse of a direct sibling)", () => {
+    expect(term(Root, SisHusband)).toBe('Kahkau');
+  });
+});
+
+describe('Mock family tree: Mayu ni a Mayu (extended -- wife-giver of a wife-giver)', () => {
+  it("mother's brother's wife -> Kani (married into the mother's own natal line)", () => {
+    expect(term(Root, MomBroWife)).toBe('Kani');
+  });
+
+  it("wife's mother -> Kani (married into the wife's father's clan, not heading it herself)", () => {
+    expect(term(Root, WifeMother)).toBe('Kani');
+  });
+
+  it('both routes into the zone agree via the clan-cascade box too', () => {
+    const boxes = getKinshipBoxesForPerson(Root.id, persons, relationships, DEFAULT_KINSHIP_BOX_RULES, null);
+    expect(boxes['Mayu'].has('MayuClan')).toBe(true);
+    expect(boxes['Mayu ni a Mayu'].has('InLawClan')).toBe(true);
+  });
+});
+
+describe('Mock family tree: Dama ni a Dama (extended -- wife-taker of a wife-taker)', () => {
+  // Only reachable from a FEMALE speaker (a male speaker's own extended
+  // wife-taking zone is Mayu ni a Mayu's mirror, not this one) -- so this
+  // block speaks from RootSisterMarried's own perspective, not Root's.
+  it("husband's mother -> Kashu, and she calls the speaker Dwi (same term at every generation, by design)", () => {
+    const res = calculateKinshipTerm(
+      RootSisterMarried, HusbandMother, persons, relationships,
+      DEFAULT_KINSHIP_BOX_RULES, PRODUCTION_TERM_RULES_SNAPSHOT,
+    );
+    expect(res?.youCallThem).toBe('Kashu');
+    expect(res?.theyCallYou).toBe('Dwi');
+  });
+});
+
+describe('Mock family tree: direct spouse (bypasses zone entirely)', () => {
+  it('resolves symmetrically from both directions', () => {
+    expect(term(Root, RootWife)).toBe('Madu Jan');
+    expect(term(RootWife, Root)).toBe('Madu Wa');
+  });
+});
