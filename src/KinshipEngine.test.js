@@ -10,7 +10,10 @@ import {
   allianceBoxesToRecords,
   allianceRecordsToBoxes,
   resolveDefaultAllianceZone,
+  findClanConnectionPath,
+  isSameLineage,
   DEFAULT_KINSHIP_BOX_RULES,
+  makeLineageKey,
 } from './KinshipEngine.js';
 
 // Wildcard term rules (generation: 99 matches any computed generation, per
@@ -146,9 +149,9 @@ describe('getKinshipBoxesForPerson', () => {
     ];
     const rels = [parent('F', 'S'), parent('M', 'S'), spouse('F', 'M'), sibling('M', 'MB'), spouse('MB', 'W2')];
     const boxes = getKinshipBoxesForPerson('S', persons, rels, DEFAULT_KINSHIP_BOX_RULES, null);
-    expect(boxes['Kahpu Kanau'].has('K')).toBe(true);
-    expect(boxes['Mayu'].has('MayuClan')).toBe(true);
-    expect(boxes['Mayu ni a Mayu'].has('X')).toBe(true);
+    expect(boxes['Kahpu Kanau'].has(makeLineageKey('K'))).toBe(true);
+    expect(boxes['Mayu'].has(makeLineageKey('MayuClan'))).toBe(true);
+    expect(boxes['Mayu ni a Mayu'].has(makeLineageKey('X'))).toBe(true);
   });
 
   it('folds a Mayu-woman-marries-out clan back into Kahpu Kanau', () => {
@@ -160,8 +163,8 @@ describe('getKinshipBoxesForPerson', () => {
     // a spouse link to classify MayuClan through in the first place.
     const rels = [parent('M', 'S'), spouse('F', 'M'), sibling('M', 'MS'), spouse('MS', 'MSH')];
     const boxes = getKinshipBoxesForPerson('S', persons, rels, DEFAULT_KINSHIP_BOX_RULES, null);
-    expect(boxes['Kahpu Kanau'].has('ThirdClan')).toBe(true);
-    expect(boxes['Kahpu Kanau'].has('K')).toBe(true);
+    expect(boxes['Kahpu Kanau'].has(makeLineageKey('ThirdClan'))).toBe(true);
+    expect(boxes['Kahpu Kanau'].has(makeLineageKey('K'))).toBe(true);
   });
 
   it('folds a Dama-man-marries-out clan back into Kahpu Kanau (mirror case)', () => {
@@ -174,8 +177,8 @@ describe('getKinshipBoxesForPerson', () => {
       sibling('FSisH', 'FSisHBro'), spouse('FSisHBro', 'FoldWife'),
     ];
     const boxes = getKinshipBoxesForPerson('S', persons, rels, DEFAULT_KINSHIP_BOX_RULES, null);
-    expect(boxes['Dama'].has('DamaClan')).toBe(true);
-    expect(boxes['Kahpu Kanau'].has('FoldClan')).toBe(true);
+    expect(boxes['Dama'].has(makeLineageKey('DamaClan'))).toBe(true);
+    expect(boxes['Kahpu Kanau'].has(makeLineageKey('FoldClan'))).toBe(true);
   });
 
   it('returns empty boxes when the speaker has no clan', () => {
@@ -460,13 +463,13 @@ describe('computeAllianceZoneBoxes / allianceBoxesToRecords / allianceRecordsToB
       kinshipRules: DEFAULT_KINSHIP_BOX_RULES,
       kinshipTermRules: ZONE_ONLY_TERM_RULES,
     });
-    expect(boxes['Mayu'].has('MayuClan')).toBe(true);
+    expect(boxes['Mayu'].has(makeLineageKey('MayuClan'))).toBe(true);
 
     const records = allianceBoxesToRecords(boxes, { treeId: 't1', anchorClanId: 'K' });
-    expect(records).toContainEqual({ treeId: 't1', anchorClanId: 'K', clanId: 'MayuClan', zone: 'Mayu', source: 'engine' });
+    expect(records).toContainEqual({ treeId: 't1', anchorClanId: 'K', clanId: 'MayuClan', subClanId: null, familyNameId: null, zone: 'Mayu', source: 'engine' });
 
     const rebuilt = allianceRecordsToBoxes(records, 'K');
-    expect(rebuilt['Mayu'].has('MayuClan')).toBe(true);
+    expect(rebuilt['Mayu'].has(makeLineageKey('MayuClan'))).toBe(true);
   });
 
   it('returns empty boxes when the root person has no clan', () => {
@@ -478,5 +481,129 @@ describe('computeAllianceZoneBoxes / allianceBoxesToRecords / allianceRecordsToB
       kinshipTermRules: ZONE_ONLY_TERM_RULES,
     });
     expect(boxes['Kahpu Kanau'].size).toBe(0);
+  });
+});
+
+// Real-world case that surfaced the bug: a person's father and mother share
+// a Clan name ("Marip") but belong to different Clan Branches and Family
+// Names -- culturally distinct lineages that can legitimately marry. The old
+// clan-only engine silently dropped the mother's side out of Mayu because
+// her clanId equaled the root's own clanId.
+describe('isSameLineage', () => {
+  it('treats missing branch/family data as compatible, not proof of a split', () => {
+    expect(isSameLineage({ clanId: 'Marip' }, { clanId: 'Marip', subClanId: 'branchB' })).toBe(true);
+  });
+
+  it('treats two confirmed-different branches of the same clan as different lineages', () => {
+    expect(isSameLineage({ clanId: 'Marip', subClanId: 'branchA' }, { clanId: 'Marip', subClanId: 'branchB' })).toBe(false);
+  });
+
+  it('treats two confirmed-different family names under the same clan+branch as different lineages', () => {
+    expect(isSameLineage(
+      { clanId: 'Marip', subClanId: 'branchA', familyNameId: 'familyX' },
+      { clanId: 'Marip', subClanId: 'branchA', familyNameId: 'familyY' },
+    )).toBe(false);
+  });
+
+  it('is false for different clans regardless of branch/family', () => {
+    expect(isSameLineage({ clanId: 'Marip' }, { clanId: 'Hpauyu' })).toBe(false);
+  });
+});
+
+describe('Lineage-aware alliance zones (Clan Branch + Family Name)', () => {
+  const buildMaripFamily = () => {
+    const father = male('F', 'Marip', { subClanId: 'branchA', familyNameId: 'familyX' });
+    const mother = female('M', 'Marip', { subClanId: 'branchB', familyNameId: 'familyY' });
+    const root = male('S', 'Marip', { subClanId: 'branchA', familyNameId: 'familyX' });
+    const persons = [root, father, mother];
+    const rels = [parent('F', 'S'), parent('M', 'S'), spouse('F', 'M')];
+    return { root, father, mother, persons, rels };
+  };
+
+  it('a same-clan different-branch mother correctly enters Mayu, not Kahpu Kanau', () => {
+    const { root, persons, rels } = buildMaripFamily();
+    const boxes = getKinshipBoxesForPerson(root.id, persons, rels, DEFAULT_KINSHIP_BOX_RULES, null);
+    expect(boxes['Mayu'].has(makeLineageKey('Marip', 'branchB', 'familyY'))).toBe(true);
+    expect(boxes['Kahpu Kanau'].has(makeLineageKey('Marip', 'branchA', 'familyX'))).toBe(true);
+    expect(boxes['Kahpu Kanau'].has(makeLineageKey('Marip', 'branchB', 'familyY'))).toBe(false);
+  });
+
+  it('calculateKinshipTerm for the mother herself still resolves to Mayu (regression guard -- this path is relationship/gender-based, not clan-based, and must keep working)', () => {
+    const { root, mother, persons, rels } = buildMaripFamily();
+    const term = calculateKinshipTerm(root, mother, persons, rels, DEFAULT_KINSHIP_BOX_RULES, ZONE_ONLY_TERM_RULES);
+    expect(term?.zone).toBe('Mayu');
+  });
+
+  it('computeAllianceZoneBoxes keeps the same-clan different-branch mother out of Kahpu Kanau too (it had the identical duplicate bug)', () => {
+    const { root, persons, rels } = buildMaripFamily();
+    const boxes = computeAllianceZoneBoxes({
+      rootPerson: root,
+      persons,
+      relationships: rels,
+      kinshipRules: DEFAULT_KINSHIP_BOX_RULES,
+      kinshipTermRules: ZONE_ONLY_TERM_RULES,
+    });
+    expect(boxes['Mayu'].has(makeLineageKey('Marip', 'branchB', 'familyY'))).toBe(true);
+    expect(boxes['Kahpu Kanau'].has(makeLineageKey('Marip', 'branchB', 'familyY'))).toBe(false);
+  });
+
+  it('a clan-only stranger lookup with the branch specified resolves to Mayu, not Kahpu Kanau', () => {
+    const { root, persons, rels } = buildMaripFamily();
+    const results = calculateAllKinshipTerms(
+      root, { id: 'stranger', clanId: 'Marip', subClanId: 'branchB', gender: 'Female' },
+      persons, rels, DEFAULT_KINSHIP_BOX_RULES, ZONE_ONLY_TERM_RULES,
+      0, 'any', null, null,
+    );
+    expect(results.length).toBe(1);
+    expect(results[0]?.zone).toBe('Mayu');
+  });
+
+  it('partial information on only one side does not cause a false split (missing data must behave exactly like the old clan-only engine)', () => {
+    const father = male('F2', 'Marip'); // branch/family never recorded
+    const mother = female('M2', 'Marip', { subClanId: 'branchB' }); // only her side is known
+    const root = male('S2', 'Marip'); // inherits father's unrecorded branch
+    const persons = [root, father, mother];
+    const rels = [parent('F2', 'S2'), parent('M2', 'S2'), spouse('F2', 'M2')];
+
+    const boxes = getKinshipBoxesForPerson(root.id, persons, rels, DEFAULT_KINSHIP_BOX_RULES, null);
+    expect(boxes['Mayu'].size).toBe(0);
+    expect(boxes['Kahpu Kanau'].has(makeLineageKey('Marip'))).toBe(true);
+  });
+
+  it('a more specific branch-tagged default rule wins over a clan-wide one for the same clan pair', () => {
+    const rules = [
+      { speakerClanId: 'Marip', targetClanId: 'Hpauyu', defaultAlliance: 'Dama', priority: 1 },
+      { speakerClanId: 'Marip', speakerSubClanId: 'branchB', targetClanId: 'Hpauyu', defaultAlliance: 'Mayu', priority: 1 },
+    ];
+    expect(resolveDefaultAllianceZone({ clanId: 'Marip', subClanId: 'branchB' }, { clanId: 'Hpauyu' }, rules)).toBe('Mayu');
+    expect(resolveDefaultAllianceZone({ clanId: 'Marip', subClanId: 'branchA' }, { clanId: 'Hpauyu' }, rules)).toBe('Dama');
+    expect(resolveDefaultAllianceZone({ clanId: 'Marip' }, { clanId: 'Hpauyu' }, rules)).toBe('Dama');
+  });
+
+  it('resolveDefaultAllianceZone still accepts plain clanId strings (backward compatible)', () => {
+    const rules = [{ speakerClanId: 'K', targetClanId: 'Z', defaultAlliance: 'Mayu', priority: 1 }];
+    expect(resolveDefaultAllianceZone('K', 'Z', rules)).toBe('Mayu');
+  });
+
+  it('findClanConnectionPath: the old 5-arg call still matches any branch of the clan', () => {
+    const s = male('S', 'K');
+    const wrongBranch = male('WB', 'Marip', { subClanId: 'branchA' });
+    const rels = [sibling('S', 'WB')];
+    const path = findClanConnectionPath('S', 'Marip', rels, [s, wrongBranch], 6);
+    expect(path?.[0]?.person?.id).toBe('WB');
+  });
+
+  it('findClanConnectionPath: a supplied branch only matches the person confirmed to be in it', () => {
+    const s = male('S', 'K');
+    const wrongBranch = male('WB', 'Marip', { subClanId: 'branchA' });
+    const rightBranch = male('RB', 'Marip', { subClanId: 'branchB' });
+    const persons = [s, wrongBranch, rightBranch];
+    const rels = [sibling('S', 'WB'), sibling('S', 'RB')];
+
+    const pathB = findClanConnectionPath('S', 'Marip', rels, persons, 6, 'branchB');
+    expect(pathB?.[0]?.person?.id).toBe('RB');
+
+    const pathA = findClanConnectionPath('S', 'Marip', rels, persons, 6, 'branchA');
+    expect(pathA?.[0]?.person?.id).toBe('WB');
   });
 });

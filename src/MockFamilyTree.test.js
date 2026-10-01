@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateKinshipTerm, getKinshipBoxesForPerson, DEFAULT_KINSHIP_BOX_RULES } from './KinshipEngine.js';
+import { calculateKinshipTerm, getKinshipBoxesForPerson, DEFAULT_KINSHIP_BOX_RULES, makeLineageKey } from './KinshipEngine.js';
 
 // A snapshot of the app's REAL kinship_term_rules table (pulled from a live,
 // signed-in session's cache on 2026-08-24) -- not hand-picked or invented.
@@ -282,8 +282,8 @@ describe('Mock family tree: Mayu ni a Mayu (extended -- wife-giver of a wife-giv
 
   it('both routes into the zone agree via the clan-cascade box too', () => {
     const boxes = getKinshipBoxesForPerson(Root.id, persons, relationships, DEFAULT_KINSHIP_BOX_RULES, null);
-    expect(boxes['Mayu'].has('MayuClan')).toBe(true);
-    expect(boxes['Mayu ni a Mayu'].has('InLawClan')).toBe(true);
+    expect(boxes['Mayu'].has(makeLineageKey('MayuClan'))).toBe(true);
+    expect(boxes['Mayu ni a Mayu'].has(makeLineageKey('InLawClan'))).toBe(true);
   });
 });
 

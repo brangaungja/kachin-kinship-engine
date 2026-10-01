@@ -2,37 +2,134 @@
  * Core Mathematical Engine for Kachin Kinship Calculations
  */
 
-/** Apply explicit speaker-clan → target-clan → zone rules (highest priority wins per target). */
-export const applyDefaultKinshipRulesToBoxes = (speakerClanId, boxes, defaultRules = []) => {
-  if (!speakerClanId || !defaultRules?.length) return boxes;
+// A person's "lineage identity" for alliance-zone purposes is NOT just their
+// Clan -- two people can share a Clan name but belong to different Clan
+// Branches (sub-clans) and/or Family Names, and are culturally distinct
+// lineages that can legitimately marry each other (e.g. a father and mother
+// both clan "Marip" but different branch/family). The engine used to key
+// everything by bare clanId, which silently merged such pairs into one
+// lineage and dropped one side out of its real Mayu/Dama zone. These helpers
+// key by the full (clan, sub-clan, family name) triple instead.
+export const LINEAGE_KEY_SEP = '::';
+
+export const makeLineageKey = (clanId, subClanId = null, familyNameId = null) =>
+  `${clanId}${LINEAGE_KEY_SEP}${subClanId || ''}${LINEAGE_KEY_SEP}${familyNameId || ''}`;
+
+export const parseLineageKey = (key) => {
+  const [clanId, subClanId, familyNameId] = String(key).split(LINEAGE_KEY_SEP);
+  return {
+    clanId: clanId || null,
+    subClanId: subClanId || null,
+    familyNameId: familyNameId || null,
+  };
+};
+
+// Two lineages count as "the same" only when they share a clan and nothing
+// proves them apart. Missing branch/family data on either side is never
+// treated as proof of a split -- a person whose branch hasn't been recorded
+// yet must keep behaving exactly like the old clan-only engine, not get
+// silently forked into an unintended extra zone.
+export const isSameLineage = (a, b) => {
+  const aClan = a?.clanId ?? null;
+  const bClan = b?.clanId ?? null;
+  if (!aClan || !bClan || aClan !== bClan) return false;
+  const aSub = a?.subClanId ?? null;
+  const bSub = b?.subClanId ?? null;
+  if (aSub && bSub && aSub !== bSub) return false;
+  const aFam = a?.familyNameId ?? null;
+  const bFam = b?.familyNameId ?? null;
+  if (aFam && bFam && aFam !== bFam) return false;
+  return true;
+};
+
+// Lineage-aware replacement for `zoneSet.has(person.clanId)` -- does any
+// lineage key already in this zone's Set represent the same lineage as
+// `person`?
+export const zoneHasLineage = (zoneSet, person) => {
+  if (!zoneSet || !person?.clanId) return false;
+  for (const key of zoneSet) {
+    if (isSameLineage(parseLineageKey(key), person)) return true;
+  }
+  return false;
+};
+
+// Does a default-rule's speaker/target side match a given lineage? A rule
+// field left blank is a wildcard for that dimension (a clan-wide rule
+// applies to every branch); a rule field that IS set only matches a person
+// confirmed to be in that exact branch/family, not someone whose branch is
+// simply unknown -- a deliberately scoped admin override shouldn't silently
+// swallow people with incomplete data.
+const ruleSideMatches = (rule, prefix, lineage) => {
+  const clanId = rule[`${prefix}ClanId`] ?? rule[`${prefix}_clan_id`] ?? null;
+  if (clanId !== (lineage?.clanId ?? null)) return false;
+  const subClanId = rule[`${prefix}SubClanId`] ?? rule[`${prefix}_sub_clan_id`] ?? null;
+  if (subClanId && subClanId !== lineage?.subClanId) return false;
+  const familyNameId = rule[`${prefix}FamilyNameId`] ?? rule[`${prefix}_family_name_id`] ?? null;
+  if (familyNameId && familyNameId !== lineage?.familyNameId) return false;
+  return true;
+};
+
+// How specifically a rule targets one side (0 = clan-wide, up to 2 = exact
+// branch + family) -- used so a deliberately narrow override always wins
+// over a broader clan-wide rule for the same pair, regardless of priority.
+const ruleSideSpecificity = (rule, prefix) => {
+  let score = 0;
+  if (rule[`${prefix}SubClanId`] ?? rule[`${prefix}_sub_clan_id`]) score += 1;
+  if (rule[`${prefix}FamilyNameId`] ?? rule[`${prefix}_family_name_id`]) score += 1;
+  return score;
+};
+
+// Normalizes either a bare clanId string (old call style, still supported)
+// or a full {clanId, subClanId, familyNameId} lineage object.
+const asLineage = (speaker) => (typeof speaker === 'string' ? { clanId: speaker } : speaker);
+
+/** Apply explicit speaker-lineage → target-lineage → zone rules (most specific + highest priority wins per target). */
+export const applyDefaultKinshipRulesToBoxes = (speaker, boxes, defaultRules = []) => {
+  const speakerLineage = asLineage(speaker);
+  if (!speakerLineage?.clanId || !defaultRules?.length) return boxes;
 
   const byTarget = new Map();
   [...defaultRules]
-    .filter((r) => (r.speakerClanId ?? r.speaker_clan_id) === speakerClanId)
-    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+    .filter((r) => ruleSideMatches(r, 'speaker', speakerLineage))
+    .sort((a, b) => {
+      const specDiff = ruleSideSpecificity(b, 'target') - ruleSideSpecificity(a, 'target');
+      if (specDiff !== 0) return specDiff;
+      return (b.priority ?? 0) - (a.priority ?? 0);
+    })
     .forEach((rule) => {
-      const targetId = rule.targetClanId ?? rule.target_clan_id;
+      const targetClanId = rule.targetClanId ?? rule.target_clan_id;
+      const targetSubClanId = rule.targetSubClanId ?? rule.target_sub_clan_id ?? null;
+      const targetFamilyNameId = rule.targetFamilyNameId ?? rule.target_family_name_id ?? null;
       const zone = rule.defaultAlliance ?? rule.default_alliance;
-      if (!targetId || !zone || byTarget.has(targetId)) return;
-      byTarget.set(targetId, zone);
+      if (!targetClanId || !zone) return;
+      const targetKey = makeLineageKey(targetClanId, targetSubClanId, targetFamilyNameId);
+      if (byTarget.has(targetKey)) return;
+      byTarget.set(targetKey, zone);
     });
 
-  byTarget.forEach((zone, clanId) => {
-    if (clanId === speakerClanId) return;
+  byTarget.forEach((zone, targetKey) => {
+    const targetLineage = parseLineageKey(targetKey);
+    if (isSameLineage(targetLineage, speakerLineage)) return;
     if (!boxes[zone]) boxes[zone] = new Set();
-    boxes[zone].add(clanId);
+    boxes[zone].add(targetKey);
   });
 
   return boxes;
 };
 
-export const resolveDefaultAllianceZone = (speakerClanId, targetClanId, defaultRules = []) => {
-  if (!speakerClanId || !targetClanId || !defaultRules?.length) return null;
+export const resolveDefaultAllianceZone = (speaker, target, defaultRules = []) => {
+  const speakerLineage = asLineage(speaker);
+  const targetLineage = asLineage(target);
+  if (!speakerLineage?.clanId || !targetLineage?.clanId || !defaultRules?.length) return null;
 
   const match = [...defaultRules]
-    .filter((r) => (r.speakerClanId ?? r.speaker_clan_id) === speakerClanId
-      && (r.targetClanId ?? r.target_clan_id) === targetClanId)
-    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))[0];
+    .filter((r) => ruleSideMatches(r, 'speaker', speakerLineage) && ruleSideMatches(r, 'target', targetLineage))
+    .sort((a, b) => {
+      const specDiff = (ruleSideSpecificity(b, 'speaker') + ruleSideSpecificity(b, 'target'))
+        - (ruleSideSpecificity(a, 'speaker') + ruleSideSpecificity(a, 'target'));
+      if (specDiff !== 0) return specDiff;
+      return (b.priority ?? 0) - (a.priority ?? 0);
+    })[0];
 
   return match?.defaultAlliance ?? match?.default_alliance ?? null;
 };
@@ -80,7 +177,7 @@ export const getKinshipBoxesForPerson = (
   };
 
   if (!rootClanId) return boxes;
-  boxes['Kahpu Kanau'].add(rootClanId);
+  boxes['Kahpu Kanau'].add(makeLineageKey(rootPerson.clanId, rootPerson.subClanId, rootPerson.familyNameId));
 
   let added = false;
   let iterations = 0;
@@ -90,8 +187,8 @@ export const getKinshipBoxesForPerson = (
     iterations++;
 
     effectiveKinshipRules.forEach(rule => {
-      const sourceClans = boxes[rule.sourceBox];
-      if (!sourceClans || sourceClans.size === 0) return;
+      const sourceLineages = boxes[rule.sourceBox];
+      if (!sourceLineages || sourceLineages.size === 0) return;
 
       relationships.filter(r => r.type === 'spouse').forEach(rel => {
         const p1 = persons.find(p => p.id === rel.person1Id);
@@ -99,23 +196,30 @@ export const getKinshipBoxesForPerson = (
         if (!p1 || !p2) return;
 
         const tryMatch = (sourceP, targetP) => {
-          if (sourceClans.has(sourceP.clanId) &&
+          // The core bug this engine was shipping: comparing bare clanId
+          // meant a same-clan-different-branch spouse (e.g. mother also
+          // clan "Marip" but a different branch than the root) could never
+          // enter Mayu/Dama at all, since her clanId always equaled the
+          // root's. isSameLineage only excludes a spouse CONFIRMED to be
+          // the same lineage, not merely the same clan name.
+          if (zoneHasLineage(sourceLineages, sourceP) &&
              (rule.sourceGender === 'Any' || sourceP.gender === rule.sourceGender) &&
              (rule.targetGender === 'Any' || targetP.gender === rule.targetGender) &&
-             targetP.clanId && targetP.clanId !== rootClanId) {
+             targetP.clanId && !isSameLineage(targetP, rootPerson)) {
 
               // In Kachin culture, Kahpu Kanau alliance box is strictly for the root clan,
               // explicit agnatic brother clans, and the Mayu-ni-a-Dama / Dama-ni-a-Mayu
               // fold-back cascades (marked `foldBack` above) -- any other rule that would
-              // add a non-root clan to Kahpu Kanau is still blocked.
-              if (rule.targetBox === 'Kahpu Kanau' && targetP.clanId !== rootClanId && !rule.foldBack) {
+              // add a non-root lineage to Kahpu Kanau is still blocked.
+              if (rule.targetBox === 'Kahpu Kanau' && !isSameLineage(targetP, rootPerson) && !rule.foldBack) {
                 return;
               }
 
               if (!boxes[rule.targetBox]) boxes[rule.targetBox] = new Set();
 
-              if (!boxes[rule.targetBox].has(targetP.clanId)) {
-                 boxes[rule.targetBox].add(targetP.clanId);
+              const targetKey = makeLineageKey(targetP.clanId, targetP.subClanId, targetP.familyNameId);
+              if (!boxes[rule.targetBox].has(targetKey)) {
+                 boxes[rule.targetBox].add(targetKey);
                  added = true;
               }
           }
@@ -128,7 +232,7 @@ export const getKinshipBoxesForPerson = (
   } while (added && iterations < 10);
 
   if (defaultKinshipRules?.length) {
-    applyDefaultKinshipRulesToBoxes(rootClanId, boxes, defaultKinshipRules);
+    applyDefaultKinshipRulesToBoxes(rootPerson, boxes, defaultKinshipRules);
   }
 
   return boxes;
@@ -217,12 +321,16 @@ export const calculateGenerationDiff = (speakerId, targetId, relationships, pers
   return null;
 };
 
-// 2.5 Educational Path Tracing (Max Depth 6)
-export const findClanConnectionPath = (speakerId, targetClanId, relationships, persons, maxDepth = 6) => {
+// 2.5 Educational Path Tracing (Max Depth 6). targetSubClanId/targetFamilyNameId
+// are optional -- when omitted, matches any branch/family of targetClanId
+// (old behavior, unchanged); when supplied, only a person confirmed to be
+// in that exact branch/family satisfies the search.
+export const findClanConnectionPath = (speakerId, targetClanId, relationships, persons, maxDepth = 6, targetSubClanId = null, targetFamilyNameId = null) => {
   if (!speakerId || !targetClanId) return null;
 
   const graph = buildRelationshipAdjacency(relationships);
   const displayLabel = (type) => type.charAt(0).toUpperCase() + type.slice(1);
+  const targetLineage = { clanId: targetClanId, subClanId: targetSubClanId, familyNameId: targetFamilyNameId };
 
   const queue = [{ id: speakerId, depth: 0, path: [] }];
   const visited = new Set([speakerId]);
@@ -232,7 +340,7 @@ export const findClanConnectionPath = (speakerId, targetClanId, relationships, p
     const currentPerson = persons.find(p => p.id === id);
 
     // If we found someone in the target clan (and they are not the speaker)
-    if (currentPerson && currentPerson.clanId === targetClanId && id !== speakerId) {
+    if (currentPerson && id !== speakerId && isSameLineage(currentPerson, targetLineage)) {
       return path.concat({ person: currentPerson, relation: 'Target Clan Member' });
     }
 
@@ -531,21 +639,22 @@ const ZONE_DISPLAY_ORDER = ['Kahpu Kanau', 'Mayu', 'Dama', 'Mayu ni a Mayu', 'Da
 // Mayu / Dama ni a Dama) plus a Kahpu Kanau match that arrived via the
 // Mayu-ni-a-Dama / Dama-ni-a-Mayu fold-back cascade rather than being the
 // speaker's actual own clan.
-const rankZoneMatch = (zone, clanId, speakerClanId, manualZones, defaultKinshipRules) => {
-  if (zone === 'Kahpu Kanau' && clanId === speakerClanId) return 1;
+const rankZoneMatch = (zone, lineage, speakerLineage, manualZones, defaultKinshipRules) => {
+  if (zone === 'Kahpu Kanau' && isSameLineage(lineage, speakerLineage)) return 1;
   if (zone === 'Mayu' || zone === 'Dama') return 1;
-  if (manualZones?.[zone]?.includes?.(clanId)) return 2;
+  const manualList = manualZones?.[zone];
+  if (Array.isArray(manualList) && manualList.some((key) => isSameLineage(parseLineageKey(key), lineage))) return 2;
   const hasDefaultRule = (defaultKinshipRules || []).some((r) =>
-    (r.speakerClanId ?? r.speaker_clan_id) === speakerClanId
-    && (r.targetClanId ?? r.target_clan_id) === clanId
+    ruleSideMatches(r, 'speaker', speakerLineage)
+    && ruleSideMatches(r, 'target', lineage)
     && (r.defaultAlliance ?? r.default_alliance) === zone);
   if (hasDefaultRule) return 3;
   return 4;
 };
 
-const sortZonesByPriority = (zones, clanId, speakerClanId, manualZones, defaultKinshipRules) => [...zones].sort((a, b) => {
-  const ta = rankZoneMatch(a, clanId, speakerClanId, manualZones, defaultKinshipRules);
-  const tb = rankZoneMatch(b, clanId, speakerClanId, manualZones, defaultKinshipRules);
+const sortZonesByPriority = (zones, lineage, speakerLineage, manualZones, defaultKinshipRules) => [...zones].sort((a, b) => {
+  const ta = rankZoneMatch(a, lineage, speakerLineage, manualZones, defaultKinshipRules);
+  const tb = rankZoneMatch(b, lineage, speakerLineage, manualZones, defaultKinshipRules);
   if (ta !== tb) return ta - tb;
   return ZONE_DISPLAY_ORDER.indexOf(a) - ZONE_DISPLAY_ORDER.indexOf(b);
 });
@@ -574,9 +683,9 @@ export const calculateKinshipTerm = (
     defaultKinshipRules,
   );
   if (manualZones) {
-    Object.entries(manualZones).forEach(([zone, clanIds]) => {
-      if (!boxes[zone] || !Array.isArray(clanIds)) return;
-      clanIds.forEach((clanId) => boxes[zone].add(clanId));
+    Object.entries(manualZones).forEach(([zone, lineageKeys]) => {
+      if (!boxes[zone] || !Array.isArray(lineageKeys)) return;
+      lineageKeys.forEach((key) => boxes[zone].add(key));
     });
   }
   let targetZone = null;
@@ -935,18 +1044,23 @@ export const calculateKinshipTerm = (
   // lookup).
   if (!targetZone) {
     if (target.clanId) {
-      const matchingZones = ZONE_DISPLAY_ORDER.filter((zoneName) => boxes[zoneName]?.has(target.clanId));
+      const matchingZones = ZONE_DISPLAY_ORDER.filter((zoneName) => zoneHasLineage(boxes[zoneName], target));
       if (matchingZones.length > 0) {
-        targetZone = sortZonesByPriority(matchingZones, target.clanId, speaker.clanId, manualZones, defaultKinshipRules)[0];
+        targetZone = sortZonesByPriority(matchingZones, target, speaker, manualZones, defaultKinshipRules)[0];
       }
     }
 
-    if (!targetZone && speaker.clanId && target.clanId === speaker.clanId) {
+    // Lineage-aware, not clanId-aware: a confirmed-different branch/family
+    // of the same clan must NOT be forced into Kahpu Kanau here -- if
+    // nothing else resolved it, the honest answer is "no term found", not a
+    // guess. A genuinely same-lineage target (or one with no branch/family
+    // recorded, so not provably different) still correctly lands here.
+    if (!targetZone && speaker.clanId && isSameLineage(target, speaker)) {
       targetZone = 'Kahpu Kanau';
     }
 
     if (!targetZone && speaker.clanId && target.clanId) {
-      targetZone = resolveDefaultAllianceZone(speaker.clanId, target.clanId, defaultKinshipRules);
+      targetZone = resolveDefaultAllianceZone(speaker, target, defaultKinshipRules);
     }
   }
 
@@ -1041,12 +1155,12 @@ export const calculateAllKinshipTerms = (
       null,
     );
     if (manualZones) {
-      Object.entries(manualZones).forEach(([zone, clanIds]) => {
-        if (!boxes[zone] || !Array.isArray(clanIds)) return;
-        clanIds.forEach((clanId) => boxes[zone].add(clanId));
+      Object.entries(manualZones).forEach(([zone, lineageKeys]) => {
+        if (!boxes[zone] || !Array.isArray(lineageKeys)) return;
+        lineageKeys.forEach((key) => boxes[zone].add(key));
       });
     }
-    const matchedZones = Object.keys(boxes).filter((zone) => boxes[zone]?.has(target.clanId));
+    const matchedZones = Object.keys(boxes).filter((zone) => zoneHasLineage(boxes[zone], target));
 
     const genDiff = manualGenDiff !== null ? manualGenDiff : calculateGenerationDiff(speaker.id, target.id, relationships, persons);
     const seniority = manualSeniority !== null ? manualSeniority : calculateSeniority(speaker, target, relationships, persons);
@@ -1058,7 +1172,7 @@ export const calculateAllKinshipTerms = (
     if (matchedZones.length > 0) {
       // Higher-priority zones (own clan, Mayu/Dama, then manual, then admin
       // default rules) come first -- see sortZonesByPriority's own comment.
-      const orderedZones = sortZonesByPriority(matchedZones, target.clanId, speaker.clanId, manualZones, defaultKinshipRules);
+      const orderedZones = sortZonesByPriority(matchedZones, target, speaker, manualZones, defaultKinshipRules);
       const results = orderedZones
         .map((zone) => resolveTermForZone(zone, effectiveGenDiff(zone), seniority, termRules, sGender, tGender))
         .filter(Boolean);
@@ -1066,8 +1180,8 @@ export const calculateAllKinshipTerms = (
     }
 
     // No box match at all -- fall back to the admin-configured default rule
-    // for this exact clan pair, if one exists.
-    const defaultZone = resolveDefaultAllianceZone(speaker.clanId, target.clanId, defaultKinshipRules);
+    // for this exact lineage pair, if one exists.
+    const defaultZone = resolveDefaultAllianceZone(speaker, target, defaultKinshipRules);
     if (defaultZone) {
       const res = resolveTermForZone(defaultZone, effectiveGenDiff(defaultZone), seniority, termRules, sGender, tGender);
       if (res) return [res];
@@ -1122,8 +1236,12 @@ export const computeAllianceZoneBoxes = ({
   persons.forEach((person) => {
     if (!person.clanId) return;
 
-    if (person.clanId === rootPerson.clanId) {
-      boxes['Kahpu Kanau'].add(person.clanId);
+    // Lineage-aware, not clanId-aware: this had the identical bug to the
+    // one fixed in getKinshipBoxesForPerson's tryMatch -- a same-clan
+    // different-branch relative must not be unconditionally shortcut into
+    // Kahpu Kanau.
+    if (isSameLineage(person, rootPerson)) {
+      boxes['Kahpu Kanau'].add(makeLineageKey(person.clanId, person.subClanId, person.familyNameId));
       return;
     }
 
@@ -1142,11 +1260,11 @@ export const computeAllianceZoneBoxes = ({
 
     if (kinship?.zone && boxes[kinship.zone]) {
       // In Kachin culture, Kahpu Kanau alliance box is strictly for the patrilineal root clan
-      // and explicit agnatic brother clans. Do not allow indirect tree paths to add non-root clans to Kahpu Kanau.
-      if (kinship.zone === 'Kahpu Kanau' && person.clanId !== rootPerson.clanId) {
+      // and explicit agnatic brother clans. Do not allow indirect tree paths to add non-root lineages to Kahpu Kanau.
+      if (kinship.zone === 'Kahpu Kanau' && !isSameLineage(person, rootPerson)) {
         return;
       }
-      boxes[kinship.zone].add(person.clanId);
+      boxes[kinship.zone].add(makeLineageKey(person.clanId, person.subClanId, person.familyNameId));
     }
   });
 
@@ -1155,9 +1273,10 @@ export const computeAllianceZoneBoxes = ({
 
 export const allianceBoxesToRecords = (boxes, { treeId, anchorClanId, source = 'engine' }) => {
   const records = [];
-  Object.entries(boxes).forEach(([zone, clanSet]) => {
-    clanSet.forEach((clanId) => {
-      records.push({ treeId, anchorClanId, clanId, zone, source });
+  Object.entries(boxes).forEach(([zone, lineageSet]) => {
+    lineageSet.forEach((lineageKey) => {
+      const { clanId, subClanId, familyNameId } = parseLineageKey(lineageKey);
+      records.push({ treeId, anchorClanId, clanId, subClanId, familyNameId, zone, source });
     });
   });
   return records;
@@ -1168,7 +1287,7 @@ export const allianceRecordsToBoxes = (records, anchorClanId) => {
   records
     .filter((r) => r.anchorClanId === anchorClanId)
     .forEach((r) => {
-      if (boxes[r.zone]) boxes[r.zone].add(r.clanId);
+      if (boxes[r.zone]) boxes[r.zone].add(makeLineageKey(r.clanId, r.subClanId, r.familyNameId));
     });
   return boxes;
 };
