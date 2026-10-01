@@ -606,4 +606,14 @@ describe('Lineage-aware alliance zones (Clan Branch + Family Name)', () => {
     const pathA = findClanConnectionPath('S', 'Marip', rels, persons, 6, 'branchA');
     expect(pathA?.[0]?.person?.id).toBe('WB');
   });
+
+  it('findClanConnectionPath: does not duplicate the matched person when the first hop is already the target', () => {
+    const s = male('S', 'K');
+    const father = male('F', 'Marip');
+    const rels = [parent('F', 'S')];
+    const path = findClanConnectionPath('S', 'Marip', rels, [s, father], 6);
+    expect(path).toHaveLength(1);
+    expect(path[0].person.id).toBe('F');
+    expect(path[0].relation).toBe('Parent');
+  });
 });

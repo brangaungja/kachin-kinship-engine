@@ -339,9 +339,15 @@ export const findClanConnectionPath = (speakerId, targetClanId, relationships, p
     const { id, depth, path } = queue.shift();
     const currentPerson = persons.find(p => p.id === id);
 
-    // If we found someone in the target clan (and they are not the speaker)
+    // If we found someone in the target clan (and they are not the speaker),
+    // `path` already ends with an entry for this exact person -- whichever
+    // neighbor-queue push reached them already recorded their real relation
+    // (Parent/Spouse/Sibling/Child). Appending another entry for the same
+    // person under a generic "Target Clan Member" label used to duplicate
+    // them in the returned chain; the real relation already explains how
+    // they connect, so just return the path as traced.
     if (currentPerson && id !== speakerId && isSameLineage(currentPerson, targetLineage)) {
-      return path.concat({ person: currentPerson, relation: 'Target Clan Member' });
+      return path;
     }
 
     if (depth >= maxDepth) continue;
