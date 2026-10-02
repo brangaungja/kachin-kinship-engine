@@ -1,0 +1,41 @@
+# Changelog
+
+Versions follow [semantic versioning](https://semver.org/): a **major**
+bump means consuming apps may need code changes, **minor** adds something
+without breaking callers, **patch** is a fix.
+
+## 2.0.0 — 2026-10-02
+
+### Breaking
+- **Lineage-aware alliance zones.** Zone sets returned by
+  `getKinshipBoxesForPerson` (and used across the engine) now hold lineage
+  keys from `makeLineageKey(clanId, subClanId, familyNameId)` instead of bare
+  clan ids, so two families of the same clan with different Clan Branches or
+  Family Names can sit in different zones. Use `parseLineageKey` /
+  `zoneHasLineage` instead of `boxes[zone].has(clanId)`.
+  `allianceBoxesToRecords` / `allianceRecordsToBoxes` records gain
+  `subClanId` / `familyNameId`.
+
+### Added
+- `makeLineageKey`, `parseLineageKey`, `isSameLineage`, `zoneHasLineage`.
+- `findClanConnectionPath` accepts optional `targetSubClanId` /
+  `targetFamilyNameId` (existing 5-argument calls are unchanged).
+- Default kinship rules can target a branch/family; the most specific
+  matching rule wins.
+- `validateFamilyGraph(persons, relationships)`: an opt-in check that
+  reports data problems the tolerant calculations silently skip.
+
+### Fixed
+- Alliance-zone propagation runs to a fixed point. A cap of 10 passes
+  silently truncated long marriage cascades.
+- `calculateGenerationDiff` resolves equally short paths deterministically,
+  preferring the fewest marriage links (blood over in-law), instead of
+  depending on the order relationships were stored.
+- `findClanConnectionPath` no longer lists the matched person twice.
+- `areSiblings`: removed a malformed, never-true comparison (no behavior
+  change for valid data).
+
+## 1.0.0
+
+Initial extraction of the engine from the Kachin-Family app (clan-only
+alliance zones). Not tagged at the time.

@@ -13,17 +13,29 @@ actual Kachin vocabulary (`Kani`, `Kawa`, `Hkau`, ...) lives in the caller's
 rule data, not in this code -- the engine itself is "alliance-zone +
 generation + seniority math," with the vocabulary layered on top.
 
-## Install (current apps, local dependency)
+## Install (pinned by commit)
 
-Both Kachin-Family and Kachin-Family-Admin depend on this via a local path
-for now:
+Both Kachin-Family and Kachin-Family-Admin depend on this GitHub repo,
+pinned to an exact commit so both apps always build the same engine:
 
 ```json
-"kachin-kinship-engine": "file:../kachin-kinship-engine"
+"kachin-kinship-engine": "github:brangaungja/kachin-kinship-engine#<commit-hash>"
 ```
 
-Since it's a `file:` dependency, run `npm install` in the consuming app again
-after changing this package to pick up the update.
+To ship an engine change: push it here (CI runs the tests), update the hash
+in **both** apps' `package.json`, run `npm install`, and restart the app's
+dev server (Vite caches pre-bundled dependencies). Releases are tagged
+(`v2.0.0`, ...) and listed in `CHANGELOG.md`; pin to a tagged commit when
+you can.
+
+## Lineage model
+
+A person's lineage is the triple **clan + clan branch (`subClanId`) +
+family name (`familyNameId`)**. Alliance-zone sets hold lineage keys
+(`makeLineageKey(clanId, subClanId, familyNameId)` -> `"clan::sub::fam"`),
+not bare clan ids. Two lineages are the same (`isSameLineage`) unless they
+differ in clan, or *both* record a branch (or family name) and those differ:
+missing data never proves a split.
 
 ## What it computes
 
@@ -35,7 +47,9 @@ after changing this package to pick up the update.
 - **`calculateGenerationDiff(speakerId, targetId, relationships, persons)`**
   BFS between two people; returns how many generations apart they are
   (positive = target is an ancestor-direction relative, negative =
-  descendant-direction), including Mayu/Dama alliance elevation.
+  descendant-direction), including Mayu/Dama alliance elevation. When
+  several paths connect them: the shortest wins; among equally short paths,
+  the one with the fewest marriage links (blood over in-law).
 
 - **`calculateSeniority(speaker, target, relationships, persons)`**
   Returns `'older'`, `'younger'`, or `'unknown'`, including in-law
@@ -51,6 +65,16 @@ after changing this package to pick up the update.
   **`allianceBoxesToRecords`** / **`allianceRecordsToBoxes`** -- batch/glue
   helpers built on the above, used for admin tooling (e.g. computing a whole
   tree's alliance-zone map at once).
+
+- **`validateFamilyGraph(persons, relationships)`** -- opt-in data check.
+  The functions above are tolerant (broken links are skipped, so broken data
+  looks like "not related"); this returns `{ ok, issues }` listing dangling
+  or unknown relationships, self-links, conflicting relationships, people
+  who are their own ancestor, and warnings (duplicates, >2 parents, a
+  marriage with unknown gender). It never changes a calculation.
+
+- **`findClanConnectionPath`**, **`isSameLineage`**, **`makeLineageKey`** /
+  **`parseLineageKey`**, **`zoneHasLineage`** -- lineage helpers (see above).
 
 See `src/KinshipEngine.js` for full function signatures and inline comments
 on the less obvious rules (multi-box tie-break priority, the great-grandparent

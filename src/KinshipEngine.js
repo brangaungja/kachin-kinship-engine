@@ -179,12 +179,14 @@ export const getKinshipBoxesForPerson = (
   if (!rootClanId) return boxes;
   boxes['Kahpu Kanau'].add(makeLineageKey(rootPerson.clanId, rootPerson.subClanId, rootPerson.familyNameId));
 
+  // Propagate to a fixed point. Each pass can only ADD lineage keys to the
+  // zone sets, and there are finitely many (zone, lineage) pairs, so the loop
+  // always terminates -- no iteration cap needed. (A former cap of 10 passes
+  // silently truncated long marriage cascades.)
   let added = false;
-  let iterations = 0;
 
   do {
     added = false;
-    iterations++;
 
     effectiveKinshipRules.forEach(rule => {
       const sourceLineages = boxes[rule.sourceBox];
@@ -229,7 +231,7 @@ export const getKinshipBoxesForPerson = (
         tryMatch(p2, p1);
       });
     });
-  } while (added && iterations < 10);
+  } while (added);
 
   if (defaultKinshipRules?.length) {
     applyDefaultKinshipRulesToBoxes(rootPerson, boxes, defaultKinshipRules);
@@ -272,49 +274,67 @@ const buildRelationshipAdjacency = (relationships) => {
 };
 
 // 2. Graph Traversal for Generation Difference
+//
+// Shortest-path BFS that tracks generation steps plus Mayu/Dama elevation.
+// Path precedence when the target is reachable by more than one path:
+//   1. fewest links (shortest path) -- as before;
+//   2. among equally short paths, the fewest marriage (spouse) links, i.e. a
+//      blood relationship wins over an in-law one;
+//   3. any remaining tie keeps relationship order (the old behavior).
+// Before, only rule 1 existed: visited-by-person-id kept whichever equally
+// short path happened to be explored first, so two paths with different
+// generation weights could give an order-dependent answer. The search runs
+// level by level and keeps every distinct (person, counters) state within a
+// level, so all equally short paths to the target are compared.
 export const calculateGenerationDiff = (speakerId, targetId, relationships, persons = []) => {
   if (speakerId === targetId) return 0;
 
   const graph = buildRelationshipAdjacency(relationships);
+  const isMale = (p) => p?.gender === 'M' || p?.gender === 'Male';
+  const isFemale = (p) => p?.gender === 'F' || p?.gender === 'Female';
+  const personById = new Map(persons.map(p => [p.id, p]));
 
-  // BFS to find shortest path tracking Mayu/Dama elevation
-  const queue = [{ id: speakerId, parentLinks: 0, childLinks: 0, mayuHops: 0, damaHops: 0 }];
-  const visited = new Set([speakerId]);
+  let frontier = [{ id: speakerId, parentLinks: 0, childLinks: 0, mayuHops: 0, damaHops: 0, spouseLinks: 0 }];
+  // People whose shortest distance is already known (reached on an earlier level).
+  const settled = new Set([speakerId]);
 
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (current.id === targetId) {
-      const genWeight = current.parentLinks - current.childLinks;
-      const mayuElevation = Math.max(0, current.mayuHops - 1);
-      const damaElevation = Math.max(0, current.damaHops - 1);
+  while (frontier.length > 0) {
+    const hits = frontier.filter(state => state.id === targetId);
+    if (hits.length > 0) {
+      const best = hits.reduce((a, b) => (b.spouseLinks < a.spouseLinks ? b : a));
+      const genWeight = best.parentLinks - best.childLinks;
+      const mayuElevation = Math.max(0, best.mayuHops - 1);
+      const damaElevation = Math.max(0, best.damaHops - 1);
       return genWeight + mayuElevation - damaElevation;
     }
 
-    if (graph[current.id]) {
-      for (const neighbor of graph[current.id]) {
-        if (!visited.has(neighbor.to)) {
-          visited.add(neighbor.to);
+    const next = [];
+    const seenStates = new Set();
+    const reachedThisLevel = new Set();
+    for (const current of frontier) {
+      for (const neighbor of graph[current.id] || []) {
+        if (settled.has(neighbor.to)) continue;
 
-          let nextState = { ...current, id: neighbor.to };
-          if (neighbor.type === 'parent') nextState.parentLinks++;
-          if (neighbor.type === 'child') nextState.childLinks++;
-
-          if (neighbor.type === 'spouse') {
-            const fromPerson = persons.find(p => p.id === current.id);
-            const toPerson = persons.find(p => p.id === neighbor.to);
-            if (fromPerson && toPerson) {
-              if ((fromPerson.gender === 'M' || fromPerson.gender === 'Male') && (toPerson.gender === 'F' || toPerson.gender === 'Female')) {
-                nextState.mayuHops++;
-              } else if ((fromPerson.gender === 'F' || fromPerson.gender === 'Female') && (toPerson.gender === 'M' || toPerson.gender === 'Male')) {
-                nextState.damaHops++;
-              }
-            }
-          }
-
-          queue.push(nextState);
+        const nextState = { ...current, id: neighbor.to };
+        if (neighbor.type === 'parent') nextState.parentLinks++;
+        if (neighbor.type === 'child') nextState.childLinks++;
+        if (neighbor.type === 'spouse') {
+          nextState.spouseLinks++;
+          const fromPerson = personById.get(current.id);
+          const toPerson = personById.get(neighbor.to);
+          if (isMale(fromPerson) && isFemale(toPerson)) nextState.mayuHops++;
+          else if (isFemale(fromPerson) && isMale(toPerson)) nextState.damaHops++;
         }
+
+        const key = `${nextState.id}|${nextState.parentLinks}|${nextState.childLinks}|${nextState.mayuHops}|${nextState.damaHops}|${nextState.spouseLinks}`;
+        if (seenStates.has(key)) continue;
+        seenStates.add(key);
+        next.push(nextState);
+        reachedThisLevel.add(neighbor.to);
       }
     }
+    reachedThisLevel.forEach(id => settled.add(id));
+    frontier = next;
   }
 
   // Fallback if disconnected
@@ -373,9 +393,10 @@ export const findClanConnectionPath = (speakerId, targetClanId, relationships, p
 
 export const areSiblings = (p1Id, p2Id, relationships = []) => {
   if (!p1Id || !p2Id || p1Id === p2Id) return false;
-  const direct = relationships.some(r => r.type === 'sibling' &&
-    ((r.person1Id === p1Id && r.person2Id === p2Id) || (r.person2Id === p1Id && r.person1Id === p1Id || (r.person1Id === p2Id && r.person2Id === p1Id)))
-  );
+  const direct = relationships.some(r => r.type === 'sibling' && (
+    (r.person1Id === p1Id && r.person2Id === p2Id)
+    || (r.person1Id === p2Id && r.person2Id === p1Id)
+  ));
   if (direct) return true;
   const p1Parents = relationships.filter(r => r.type === 'parent' && r.person2Id === p1Id).map(r => r.person1Id);
   const p2Parents = relationships.filter(r => r.type === 'parent' && r.person2Id === p2Id).map(r => r.person1Id);
@@ -1296,4 +1317,145 @@ export const allianceRecordsToBoxes = (records, anchorClanId) => {
       if (boxes[r.zone]) boxes[r.zone].add(makeLineageKey(r.clanId, r.subClanId, r.familyNameId));
     });
   return boxes;
+};
+
+
+// ---------------------------------------------------------------------------
+// Graph validation (opt-in "strict" check)
+// ---------------------------------------------------------------------------
+//
+// The calculation functions above are deliberately tolerant: a relationship
+// pointing at a missing person is skipped, an unknown relationship type is
+// ignored, and a disconnected graph just yields `null` / empty boxes. That
+// keeps the UI working on imperfect data, but it also makes "these two people
+// aren't related" indistinguishable from "the data is broken". Callers that
+// need to tell the difference (imports, admin data checks, tests) can run this
+// first. It never changes any calculation result.
+
+const KNOWN_RELATIONSHIP_TYPES = new Set(['parent', 'spouse', 'sibling']);
+const isGenderKnown = (p) => ['M', 'Male', 'F', 'Female'].includes(p?.gender);
+
+/**
+ * Check a family graph for data problems the tolerant engine would silently
+ * skip. Returns `{ ok, issues }`; `ok` is false when any issue is an error.
+ * Each issue: `{ code, severity: 'error' | 'warning', message, personIds,
+ * relationshipIndex? }`.
+ *
+ * Errors (results may be wrong): duplicate_person_id, unknown_relationship_type,
+ * dangling_relationship, self_relationship, conflicting_relationship
+ * (e.g. both parent and spouse of the same person), parent_cycle (someone is
+ * their own ancestor).
+ * Warnings (results may be incomplete): duplicate_relationship,
+ * too_many_parents (more than two), missing_gender_in_marriage (Mayu/Dama
+ * direction can't be worked out).
+ */
+export const validateFamilyGraph = (persons = [], relationships = []) => {
+  const issues = [];
+  const add = (severity, code, message, personIds, extra = {}) => {
+    issues.push({ code, severity, message, personIds, ...extra });
+  };
+
+  const personById = new Map();
+  persons.forEach((p) => {
+    if (personById.has(p.id)) {
+      add('error', 'duplicate_person_id', `Person id ${p.id} appears more than once.`, [p.id]);
+    } else {
+      personById.set(p.id, p);
+    }
+  });
+
+  const seenPairs = new Map(); // pairKey -> relationship type
+  const parentsOf = new Map(); // childId -> Set(parentId)
+  const childrenOf = new Map(); // parentId -> Set(childId)
+  const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+
+  relationships.forEach((rel, relationshipIndex) => {
+    const { type, person1Id: a, person2Id: b } = rel;
+    const at = { relationshipIndex };
+
+    if (!KNOWN_RELATIONSHIP_TYPES.has(type)) {
+      add('error', 'unknown_relationship_type', `Unknown relationship type "${type}".`, [a, b], at);
+      return;
+    }
+    const missing = [a, b].filter((id) => !personById.has(id));
+    if (missing.length) {
+      add('error', 'dangling_relationship', `A ${type} relationship points at a missing person (${missing.join(', ')}).`, [a, b], at);
+      return;
+    }
+    if (a === b) {
+      add('error', 'self_relationship', `${a} has a ${type} relationship with themselves.`, [a], at);
+      return;
+    }
+
+    const key = pairKey(a, b);
+    const previous = seenPairs.get(key);
+    if (previous === type) {
+      const sameDirection = type !== 'parent' || parentsOf.get(b)?.has(a);
+      if (sameDirection) {
+        add('warning', 'duplicate_relationship', `${a} and ${b} have the same ${type} relationship recorded twice.`, [a, b], at);
+        return;
+      }
+    }
+    if (previous && previous !== type) {
+      add('error', 'conflicting_relationship', `${a} and ${b} are recorded as both ${previous} and ${type}.`, [a, b], at);
+    }
+    seenPairs.set(key, type);
+
+    if (type === 'parent') {
+      if (!parentsOf.has(b)) parentsOf.set(b, new Set());
+      parentsOf.get(b).add(a);
+      if (!childrenOf.has(a)) childrenOf.set(a, new Set());
+      childrenOf.get(a).add(b);
+    }
+    if (type === 'spouse') {
+      const unknown = [a, b].filter((id) => !isGenderKnown(personById.get(id)));
+      if (unknown.length) {
+        add('warning', 'missing_gender_in_marriage', `Gender is missing for ${unknown.join(', ')}, so Mayu/Dama direction for this marriage can't be determined.`, unknown, at);
+      }
+    }
+  });
+
+  parentsOf.forEach((parents, childId) => {
+    if (parents.size > 2) {
+      add('warning', 'too_many_parents', `${childId} has ${parents.size} recorded parents.`, [childId, ...parents]);
+    }
+  });
+
+  // Parent cycles: depth-first search over parent -> child edges, coloring
+  // nodes in progress; reaching an in-progress node again is a cycle.
+  const IN_PROGRESS = 1;
+  const DONE = 2;
+  const state = new Map();
+  const reportedCycles = new Set();
+  childrenOf.forEach((_, startId) => {
+    if (state.get(startId)) return;
+    const stack = [[startId, [...(childrenOf.get(startId) || [])]]];
+    const path = [startId];
+    state.set(startId, IN_PROGRESS);
+    while (stack.length) {
+      const top = stack[stack.length - 1];
+      const nextId = top[1].pop();
+      if (nextId === undefined) {
+        state.set(top[0], DONE);
+        stack.pop();
+        path.pop();
+        continue;
+      }
+      const nextState = state.get(nextId);
+      if (nextState === IN_PROGRESS) {
+        const cycle = path.slice(path.indexOf(nextId));
+        const cycleKey = [...cycle].sort().join('|');
+        if (!reportedCycles.has(cycleKey)) {
+          reportedCycles.add(cycleKey);
+          add('error', 'parent_cycle', `${cycle.join(' -> ')} -> ${nextId} makes someone their own ancestor.`, cycle);
+        }
+      } else if (!nextState) {
+        state.set(nextId, IN_PROGRESS);
+        path.push(nextId);
+        stack.push([nextId, [...(childrenOf.get(nextId) || [])]]);
+      }
+    }
+  });
+
+  return { ok: !issues.some((issue) => issue.severity === 'error'), issues };
 };

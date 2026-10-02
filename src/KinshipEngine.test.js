@@ -14,6 +14,7 @@ import {
   isSameLineage,
   DEFAULT_KINSHIP_BOX_RULES,
   makeLineageKey,
+  validateFamilyGraph,
 } from './KinshipEngine.js';
 
 // Wildcard term rules (generation: 99 matches any computed generation, per
@@ -80,11 +81,37 @@ describe('calculateGenerationDiff', () => {
     const rels = [parent('p', 'c')];
     expect(calculateGenerationDiff('c', 'stranger', rels)).toBeNull();
   });
+
+  it('prefers a blood path over an equally short in-law path, regardless of relationship order', () => {
+    // T is both S's father's sibling (blood: +1, an uncle) and S's wife's
+    // sibling (in-law: 0). Both paths are 2 links long; blood must win.
+    const persons = [male('S', 'K'), male('F', 'K'), female('W', 'Z'), male('T', 'K')];
+    const bloodFirst = [parent('F', 'S'), sibling('F', 'T'), spouse('S', 'W'), sibling('W', 'T')];
+    const inLawFirst = [spouse('S', 'W'), sibling('W', 'T'), parent('F', 'S'), sibling('F', 'T')];
+    expect(calculateGenerationDiff('S', 'T', bloodFirst, persons)).toBe(1);
+    expect(calculateGenerationDiff('S', 'T', inLawFirst, persons)).toBe(1);
+  });
+
+  it('still takes a shorter in-law path over a longer blood path', () => {
+    // W's father reached directly by marriage (2 links) beats a 3-link blood
+    // route; shortest path stays the first rule.
+    const persons = [male('S', 'K'), female('W', 'Z'), male('WF', 'Z'), male('X', 'K')];
+    const rels = [spouse('S', 'W'), parent('WF', 'W'), parent('X', 'S'), sibling('X', 'Y'), parent('Y', 'WF')];
+    expect(calculateGenerationDiff('S', 'WF', rels, persons)).toBe(1);
+  });
 });
 
 describe('areSiblings', () => {
   it('is true for an explicit sibling relationship', () => {
     expect(areSiblings('a', 'b', [sibling('a', 'b')])).toBe(true);
+  });
+
+  it('is true when the sibling relationship is stored in the other direction', () => {
+    expect(areSiblings('a', 'b', [sibling('b', 'a')])).toBe(true);
+  });
+
+  it('is not fooled by a sibling row unrelated to the second person', () => {
+    expect(areSiblings('a', 'b', [sibling('a', 'c'), sibling('c', 'a')])).toBe(false);
   });
 
   it('is true when two people share a recorded parent', () => {
@@ -184,6 +211,25 @@ describe('getKinshipBoxesForPerson', () => {
   it('returns empty boxes when the speaker has no clan', () => {
     const boxes = getKinshipBoxesForPerson('S', [{ id: 'S' }], [], DEFAULT_KINSHIP_BOX_RULES, null);
     expect(boxes['Kahpu Kanau'].size).toBe(0);
+  });
+
+  it('follows a long marriage cascade to the end (no fixed pass limit)', () => {
+    // 15 levels of: a Kahpu Kanau man marries a woman of clan A_i (-> Mayu),
+    // and a woman of A_i marries a man of clan K_{i+1} (-> folds back into
+    // Kahpu Kanau), feeding the next level. Relationships are listed last
+    // level first, so each propagation pass can only uncover one level --
+    // the old 10-pass cap stopped partway down this chain.
+    const LEVELS = 15;
+    const persons = [male('S', 'K0')];
+    const rels = [];
+    for (let i = 0; i < LEVELS; i += 1) {
+      const kahpuMan = i === 0 ? 'S' : `Y${i - 1}`;
+      persons.push(female(`W${i}`, `A${i}`), female(`X${i}`, `A${i}`), male(`Y${i}`, `K${i + 1}`));
+      rels.unshift(spouse(kahpuMan, `W${i}`), spouse(`X${i}`, `Y${i}`));
+    }
+    const boxes = getKinshipBoxesForPerson('S', persons, rels, DEFAULT_KINSHIP_BOX_RULES, null);
+    expect(boxes['Mayu'].has(makeLineageKey(`A${LEVELS - 1}`))).toBe(true);
+    expect(boxes['Kahpu Kanau'].has(makeLineageKey(`K${LEVELS}`))).toBe(true);
   });
 });
 
@@ -615,5 +661,61 @@ describe('Lineage-aware alliance zones (Clan Branch + Family Name)', () => {
     expect(path).toHaveLength(1);
     expect(path[0].person.id).toBe('F');
     expect(path[0].relation).toBe('Parent');
+  });
+});
+
+describe('validateFamilyGraph', () => {
+  const codes = (result) => result.issues.map((i) => i.code).sort();
+
+  it('passes a clean family', () => {
+    const persons = [male('F', 'K'), female('M', 'Z'), male('S', 'K'), female('D', 'K')];
+    const rels = [spouse('F', 'M'), parent('F', 'S'), parent('M', 'S'), parent('F', 'D'), sibling('S', 'D')];
+    expect(validateFamilyGraph(persons, rels)).toEqual({ ok: true, issues: [] });
+  });
+
+  it('reports a relationship pointing at a missing person', () => {
+    const result = validateFamilyGraph([male('A', 'K')], [parent('A', 'ghost')]);
+    expect(result.ok).toBe(false);
+    expect(codes(result)).toEqual(['dangling_relationship']);
+    expect(result.issues[0].relationshipIndex).toBe(0);
+  });
+
+  it('reports an unknown relationship type and a self-relationship', () => {
+    const persons = [male('A', 'K'), male('B', 'K')];
+    const result = validateFamilyGraph(persons, [
+      { type: 'cousin', person1Id: 'A', person2Id: 'B' },
+      sibling('A', 'A'),
+    ]);
+    expect(codes(result)).toEqual(['self_relationship', 'unknown_relationship_type']);
+  });
+
+  it('reports someone who is their own ancestor', () => {
+    const persons = [male('A', 'K'), male('B', 'K'), male('C', 'K')];
+    const result = validateFamilyGraph(persons, [parent('A', 'B'), parent('B', 'C'), parent('C', 'A')]);
+    expect(result.ok).toBe(false);
+    expect(codes(result)).toEqual(['parent_cycle']);
+    expect(result.issues[0].personIds.sort()).toEqual(['A', 'B', 'C']);
+  });
+
+  it('reports the same pair recorded as two different relationships', () => {
+    const persons = [male('A', 'K'), female('B', 'Z')];
+    const result = validateFamilyGraph(persons, [spouse('A', 'B'), parent('A', 'B')]);
+    expect(codes(result)).toEqual(['conflicting_relationship']);
+  });
+
+  it('warns (without failing) about duplicates, extra parents, and missing gender', () => {
+    const persons = [male('A', 'K'), female('B', 'Z'), { id: 'C', clanId: 'K' }, male('P1', 'K'), male('P2', 'K'), male('P3', 'K')];
+    const result = validateFamilyGraph(persons, [
+      spouse('A', 'B'), spouse('B', 'A'),
+      spouse('A', 'C'),
+      parent('P1', 'A'), parent('P2', 'A'), parent('P3', 'A'),
+    ]);
+    expect(result.ok).toBe(true);
+    expect(codes(result)).toEqual(['duplicate_relationship', 'missing_gender_in_marriage', 'too_many_parents']);
+  });
+
+  it('reports a duplicate person id', () => {
+    const result = validateFamilyGraph([male('A', 'K'), female('A', 'Z')], []);
+    expect(codes(result)).toEqual(['duplicate_person_id']);
   });
 });
