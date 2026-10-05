@@ -4,6 +4,24 @@ Versions follow [semantic versioning](https://semver.org/): a **major**
 bump means consuming apps may need code changes, **minor** adds something
 without breaking callers, **patch** is a fix.
 
+## 2.1.3 — 2026-10-05
+
+### Added
+- **An order set by hand can settle what the birth dates cannot.** A date
+  known only to the year or month ("1985", "1985-03") allows a range of
+  days; a `birthOrder` that falls inside that range is now the person's
+  place within it. Two siblings born the same full day (twins) are told
+  apart by a `birthOrder` set on both. An order never overrides what the
+  dates do say: outside the allowed range it is ignored, as before.
+- `dobDayRange(dob)`, `siblingOrderKey(person)`,
+  `compareSiblingOrder(a, b)` -- the sibling ordering the engine uses,
+  exported so apps sort siblings exactly the same way.
+
+### Fixed
+- A `birthOrder` below zero lost its minus sign. Orders are anchored on the
+  days-since-1970 scale, so a sibling placed before someone born before
+  1970 has a negative order and was treated as the younger one.
+
 ## 2.1.2 — 2026-10-05
 
 ### Fixed

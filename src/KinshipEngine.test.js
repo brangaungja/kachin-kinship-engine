@@ -15,6 +15,9 @@ import {
   DEFAULT_KINSHIP_BOX_RULES,
   makeLineageKey,
   validateFamilyGraph,
+  dobDayRange,
+  siblingOrderKey,
+  compareSiblingOrder,
 } from './KinshipEngine.js';
 
 // Wildcard term rules (generation: 99 matches any computed generation, per
@@ -717,5 +720,62 @@ describe('validateFamilyGraph', () => {
   it('reports a duplicate person id', () => {
     const result = validateFamilyGraph([male('A', 'K'), female('A', 'Z')], []);
     expect(codes(result)).toEqual(['duplicate_person_id']);
+  });
+});
+describe('birth order when the dates cannot decide', () => {
+  const day = (iso) => Math.floor(new Date(iso).getTime() / 86400000);
+  const seniority = (speaker, target) =>
+    calculateSeniority(speaker, target, [sibling(speaker.id, target.id)], [speaker, target]);
+
+  it('reads a year or a month as the range of days it allows', () => {
+    expect(dobDayRange('1985')).toEqual({ start: day('1985-01-01'), end: day('1985-12-31') });
+    expect(dobDayRange('1984-02')).toEqual({ start: day('1984-02-01'), end: day('1984-02-29') });
+    expect(dobDayRange('1985-06-10')).toEqual({ start: day('1985-06-10'), end: day('1985-06-10') });
+    expect(dobDayRange('')).toBeNull();
+    expect(dobDayRange('not a date')).toBeNull();
+  });
+
+  it('places a year-only sibling by an order set by hand inside that year', () => {
+    const yearOnly = { id: 'a', dob: '1985' };
+    const dated = { id: 'b', dob: '1985-06-10' };
+    // By default the year-only sibling sits at the start of the year.
+    expect(seniority(dated, yearOnly)).toBe('older');
+    // Placed by hand after the June sibling, still inside 1985.
+    const placed = { ...yearOnly, birthOrder: day('1985-09-01') };
+    expect(siblingOrderKey(placed)).toBe(day('1985-09-01'));
+    expect(seniority(dated, placed)).toBe('younger');
+  });
+
+  it('never lets an order set by hand contradict the date', () => {
+    const older = { id: 'a', dob: '1980', birthOrder: day('1990-01-01') };
+    const younger = { id: 'b', dob: '1985-06-10' };
+    expect(siblingOrderKey(older)).toBe(day('1980-01-01'));
+    expect(seniority(younger, older)).toBe('older');
+    // A full date leaves no room at all.
+    expect(siblingOrderKey({ dob: '1985-06-10', birthOrder: day('1985-06-11') })).toBe(day('1985-06-10'));
+  });
+
+  it('tells twins apart only by an order set by hand on both', () => {
+    const first = { id: 'a', dob: '1990-03-03' };
+    const second = { id: 'b', dob: '1990-03-03' };
+    expect(compareSiblingOrder(first, second)).toBe(0);
+    expect(seniority(first, second)).toBe('unknown');
+    expect(seniority({ ...first, birthOrder: 1 }, second)).toBe('unknown');
+    expect(seniority({ ...first, birthOrder: 1 }, { ...second, birthOrder: 2 })).toBe('younger');
+    expect(seniority({ ...second, birthOrder: 2 }, { ...first, birthOrder: 1 })).toBe('older');
+  });
+
+  it('keeps the sign of an order anchored before 1970', () => {
+    // Born 1960; an undated sibling placed BEFORE them gets a lower number.
+    const dated = { id: 'a', dob: '1960-05-01' };
+    const placedBefore = { id: 'b', birthOrder: day('1960-05-01') - 1000 };
+    expect(siblingOrderKey(placedBefore)).toBeLessThan(0);
+    expect(seniority(dated, placedBefore)).toBe('older');
+    expect(siblingOrderKey({ birth_order: '-250' })).toBe(-250);
+  });
+
+  it('has nothing to say when either sibling has no date and no order', () => {
+    expect(compareSiblingOrder({ id: 'a' }, { id: 'b', dob: '1990' })).toBeNull();
+    expect(siblingOrderKey(null)).toBeNull();
   });
 });

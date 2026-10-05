@@ -25,7 +25,7 @@ pinned to an exact commit so both apps always build the same engine:
 To ship an engine change: push it here (CI runs the tests), update the hash
 in **both** apps' `package.json`, run `npm install`, and restart the app's
 dev server (Vite caches pre-bundled dependencies). Releases are tagged
-(`v2.1.2`, ...) and listed in `CHANGELOG.md`; pin to a tagged commit when
+(`v2.1.3`, ...) and listed in `CHANGELOG.md`; pin to a tagged commit when
 you can.
 
 ## Lineage model
@@ -89,6 +89,12 @@ markers as different lineages. A lineage key then has an optional fourth part
   **`parseLineageKey`** / **`lineageKeyOf`**, **`zoneHasLineage`**,
   **`markMarriageSeparatedLineages`**, **`isFoldBackRule`** -- lineage and
   rule helpers (see above).
+
+- **`siblingOrderKey`**, **`compareSiblingOrder`**, **`dobDayRange`** --
+  how siblings are ordered: by birth date, with an order set by hand
+  (`birthOrder`) deciding only where the dates cannot (no date, a date known
+  only to the year or month, twins). Sort siblings with these so an app's
+  list always agrees with the engine's elder / younger terms.
 
 See `src/KinshipEngine.js` for full function signatures and inline comments
 on the less obvious rules (multi-box tie-break priority, the great-grandparent

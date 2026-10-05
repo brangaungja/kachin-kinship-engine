@@ -541,27 +541,89 @@ export const areSiblings = (p1Id, p2Id, relationships = []) => {
   return p1Parents.length > 0 && p1Parents.some(parentId => p2Parents.includes(parentId));
 };
 
-// Same day-scale DOB/birth-order unification the app's own sibling reorder
-// UI uses (see the app's genealogyRules.js -- getSiblingOrderKey): a DOB
-// converts to a day-number and always outranks a manual birthOrder guess;
-// a manual birthOrder is anchored onto that same numeric scale by the app's
-// own reorder flow whenever a dated sibling exists in the group, so an
-// undated and a dated sibling remain meaningfully comparable here. Only
-// valid for comparing two people WITHIN the same sibling group -- birthOrder
-// alone has no shared meaning across two unrelated sibling groups, which is
-// why general (non-sibling) comparisons below stay DOB-only.
+// ---- Birth order within one sibling group ---------------------------------
+//
+// Everything is placed on one scale: days since 1970. A birth date gives the
+// day; a birth order set by hand (birthOrder) is a number on that same scale,
+// anchored between the neighbours' days by the app's reorder flow, so dated
+// and undated siblings stay comparable. Only meaningful WITHIN one sibling
+// group -- a birthOrder has no shared meaning across two families, which is
+// why general (non-sibling) comparisons stay date-only.
+//
+// A date can be known only to the year ("1985") or the month ("1985-03").
+// It then allows a RANGE of days, and cannot say who is older among siblings
+// whose ranges overlap. There, and for twins born the same day, an order set
+// by hand decides -- but never against what the dates do say.
 const MS_PER_DAY = 86400000;
-const getSiblingOrderKey = (p) => {
-  if (!p) return null;
-  if (p.dob) {
-    const ms = new Date(p.dob).getTime();
-    if (Number.isFinite(ms)) return Math.floor(ms / MS_PER_DAY);
+
+/**
+ * The days a recorded birth date allows: { start, end } in days since 1970,
+ * or null when there is no usable date. "1985" is the whole year, "1985-03"
+ * the whole month, a full date a single day.
+ */
+export const dobDayRange = (dob) => {
+  if (!dob) return null;
+  const dayOf = (year, month, day) => Math.floor(Date.UTC(year, month - 1, day) / MS_PER_DAY);
+  const parts = /^(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?/.exec(String(dob).trim());
+  if (!parts) {
+    const ms = new Date(dob).getTime();
+    if (!Number.isFinite(ms)) return null;
+    const day = Math.floor(ms / MS_PER_DAY);
+    return { start: day, end: day };
   }
-  const raw = p.birthOrder ?? p.birth_order ?? p.birth_order_num ?? p.birthOrderNum;
+  const year = Number(parts[1]);
+  const month = parts[2] ? Number(parts[2]) : null;
+  const day = parts[3] ? Number(parts[3]) : null;
+  if (month === null) return { start: dayOf(year, 1, 1), end: dayOf(year, 12, 31) };
+  // Day 0 of the next month is the last day of this one.
+  if (day === null) return { start: dayOf(year, month, 1), end: dayOf(year, month + 1, 0) };
+  return { start: dayOf(year, month, day), end: dayOf(year, month, day) };
+};
+
+/** A birth order set by hand, as a number (it can be negative: before 1970). */
+const manualBirthOrder = (p) => {
+  const raw = p?.birthOrder ?? p?.birth_order ?? p?.birth_order_num ?? p?.birthOrderNum;
   if (raw === null || raw === undefined) return null;
-  const cleaned = String(raw).replace(/[^0-9]/g, '');
-  const num = parseInt(cleaned, 10);
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
+  const num = parseInt(String(raw).replace(/[^0-9-]/g, ''), 10);
   return Number.isFinite(num) ? num : null;
+};
+
+/**
+ * A person's place on the sibling scale, or null when nothing is known.
+ * With a birth date: the first day it allows -- unless the date leaves room
+ * (year or month only) and an order set by hand falls inside that room, in
+ * which case that is their place. Without a date: the order set by hand.
+ */
+export const siblingOrderKey = (p) => {
+  if (!p) return null;
+  const manual = manualBirthOrder(p);
+  const range = dobDayRange(p.dob);
+  if (!range) return manual;
+  if (manual !== null && range.end > range.start && manual >= range.start && manual <= range.end) {
+    return manual;
+  }
+  return range.start;
+};
+
+/**
+ * Who is older of two siblings: negative when `a` is older, positive when
+ * `b` is, 0 when they tie, null when either has no known place. Two people
+ * born the same full day (twins) tie on dates; an order set by hand on both
+ * breaks the tie.
+ */
+export const compareSiblingOrder = (a, b) => {
+  const keyA = siblingOrderKey(a);
+  const keyB = siblingOrderKey(b);
+  if (keyA === null || keyB === null) return null;
+  if (keyA !== keyB) return keyA - keyB;
+  const rangeA = dobDayRange(a.dob);
+  const rangeB = dobDayRange(b.dob);
+  const sameFullDay = rangeA && rangeB && rangeA.start === rangeA.end && rangeB.start === rangeB.end;
+  if (!sameFullDay) return 0;
+  const manualA = manualBirthOrder(a);
+  const manualB = manualBirthOrder(b);
+  return manualA !== null && manualB !== null ? manualA - manualB : 0;
 };
 
 // 3. Seniority Calculation
@@ -587,22 +649,16 @@ export const calculateSeniority = (
     // Check if target is a sibling of this spouse (explicit sibling or shared parents)
     const isSpouseSibling = areSiblings(spouseId, target.id, relationships);
     if (isSpouseSibling) {
-      const targetKey = getSiblingOrderKey(target);
-      const spouseKey = getSiblingOrderKey(spouse);
-      if (targetKey !== null && spouseKey !== null && targetKey !== spouseKey) {
-        return targetKey > spouseKey ? 'younger' : 'older';
-      }
+      const order = compareSiblingOrder(target, spouse);
+      if (order) return order > 0 ? 'younger' : 'older';
     }
   }
 
   // B. Check if target is a direct sibling of speaker
   const isDirectSibling = areSiblings(speaker.id, target.id, relationships);
   if (isDirectSibling) {
-    const targetKey = getSiblingOrderKey(target);
-    const speakerKey = getSiblingOrderKey(speaker);
-    if (targetKey !== null && speakerKey !== null && targetKey !== speakerKey) {
-      return targetKey > speakerKey ? 'younger' : 'older';
-    }
+    const order = compareSiblingOrder(target, speaker);
+    if (order) return order > 0 ? 'younger' : 'older';
   }
 
   // C. General DOB comparison (speaker vs target) -- DOB-only on purpose: a
@@ -638,7 +694,6 @@ export const calculateSeniority = (
         .forEach((r) => targetSiblingIds.add(r.person2Id));
     });
 
-    const targetKey = getSiblingOrderKey(target);
     for (const siblingId of targetSiblingIds) {
       if (visitedSiblingChain.has(siblingId)) continue;
       const sibling = persons.find(p => p.id === siblingId);
@@ -647,11 +702,11 @@ export const calculateSeniority = (
       const siblingSeniority = calculateSeniority(speaker, sibling, relationships, persons, visitedSpouses, visitedSiblingChain);
       if (siblingSeniority === 'unknown') continue;
 
-      const siblingKey = getSiblingOrderKey(sibling);
-      if (targetKey === null || siblingKey === null || targetKey === siblingKey) continue;
+      const order = compareSiblingOrder(target, sibling);
+      if (!order) continue;
 
-      if (targetKey > siblingKey && siblingSeniority === 'younger') return 'younger';
-      if (targetKey < siblingKey && siblingSeniority === 'older') return 'older';
+      if (order > 0 && siblingSeniority === 'younger') return 'younger';
+      if (order < 0 && siblingSeniority === 'older') return 'older';
     }
   }
 
