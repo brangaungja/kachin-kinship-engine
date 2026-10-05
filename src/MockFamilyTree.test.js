@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   calculateKinshipTerm, calculateAllKinshipTerms, getKinshipBoxesForPerson, DEFAULT_KINSHIP_BOX_RULES,
   makeLineageKey, parseLineageKey, lineageKeyOf, isSameLineage, zoneHasLineage, markMarriageSeparatedLineages,
+  findClanConnectionPath,
 } from './KinshipEngine.js';
 
 // A snapshot of the app's REAL kinship_term_rules table (pulled from a live,
@@ -521,5 +522,40 @@ describe('Lineage keys with a lineage group', () => {
     expect(isSameLineage(a, b)).toBe(false);
     expect(isSameLineage(a, { clanId: 'Marip' })).toBe(true);
     expect(isSameLineage(a, { clanId: 'Marip', lineageGroup: 'm:p1' })).toBe(true);
+  });
+});
+
+describe('findClanConnectionPath: tracing to one family among several of the same clan', () => {
+  // Root's father and mother are both "Marip"; the mother's brother is the
+  // nearest person of the MOTHER's family other than her.
+  const people = markMarriageSeparatedLineages(
+    [
+      male('tDad', 'Marip'), female('tMom', 'Marip'), male('tRoot', 'Marip'),
+      male('tMomFather', 'Marip'), male('tMomBrother', 'Marip'),
+    ],
+    [
+      spouse('tDad', 'tMom'), parent('tDad', 'tRoot'), parent('tMom', 'tRoot'),
+      parent('tMomFather', 'tMom'), parent('tMomFather', 'tMomBrother'),
+    ],
+  );
+  const links = [
+    spouse('tDad', 'tMom'), parent('tDad', 'tRoot'), parent('tMom', 'tRoot'),
+    parent('tMomFather', 'tMom'), parent('tMomFather', 'tMomBrother'),
+  ];
+  const groupOf = (id) => people.find((p) => p.id === id).lineageGroup;
+  const endOf = (path) => path?.[path.length - 1]?.person?.id;
+
+  it('without a family, stops at the first person of the clan (unchanged)', () => {
+    expect(['tDad', 'tMom']).toContain(endOf(findClanConnectionPath('tRoot', 'Marip', links, people, 6)));
+  });
+
+  it("with the mother's family, leads to her side, not the father's", () => {
+    const path = findClanConnectionPath('tRoot', 'Marip', links, people, 6, null, null, groupOf('tMom'));
+    expect(endOf(path)).toBe('tMom');
+  });
+
+  it("with the root's own family, leads to the father's side", () => {
+    const path = findClanConnectionPath('tRoot', 'Marip', links, people, 6, null, null, groupOf('tRoot'));
+    expect(endOf(path)).toBe('tDad');
   });
 });

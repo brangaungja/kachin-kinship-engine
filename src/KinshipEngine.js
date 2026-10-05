@@ -450,13 +450,15 @@ export const calculateGenerationDiff = (speakerId, targetId, relationships, pers
 // 2.5 Educational Path Tracing (Max Depth 6). targetSubClanId/targetFamilyNameId
 // are optional -- when omitted, matches any branch/family of targetClanId
 // (old behavior, unchanged); when supplied, only a person confirmed to be
-// in that exact branch/family satisfies the search.
-export const findClanConnectionPath = (speakerId, targetClanId, relationships, persons, maxDepth = 6, targetSubClanId = null, targetFamilyNameId = null) => {
+// in that exact branch/family satisfies the search. targetLineageGroup
+// (optional) narrows it further to one family among several with the same
+// recorded lineage -- see markMarriageSeparatedLineages.
+export const findClanConnectionPath = (speakerId, targetClanId, relationships, persons, maxDepth = 6, targetSubClanId = null, targetFamilyNameId = null, targetLineageGroup = null) => {
   if (!speakerId || !targetClanId) return null;
 
   const graph = buildRelationshipAdjacency(relationships);
   const displayLabel = (type) => type.charAt(0).toUpperCase() + type.slice(1);
-  const targetLineage = { clanId: targetClanId, subClanId: targetSubClanId, familyNameId: targetFamilyNameId };
+  const targetLineage = { clanId: targetClanId, subClanId: targetSubClanId, familyNameId: targetFamilyNameId, lineageGroup: targetLineageGroup };
 
   const queue = [{ id: speakerId, depth: 0, path: [] }];
   const visited = new Set([speakerId]);

@@ -4,6 +4,13 @@ Versions follow [semantic versioning](https://semver.org/): a **major**
 bump means consuming apps may need code changes, **minor** adds something
 without breaking callers, **patch** is a fix.
 
+## 2.1.1 — 2026-10-05
+
+### Added
+- `findClanConnectionPath` takes an optional eighth argument,
+  `targetLineageGroup`, to trace to one family among several with the same
+  recorded lineage (existing calls are unchanged).
+
 ## 2.1.0 — 2026-10-05
 
 ### Added
