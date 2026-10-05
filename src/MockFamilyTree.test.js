@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { calculateKinshipTerm, getKinshipBoxesForPerson, DEFAULT_KINSHIP_BOX_RULES, makeLineageKey } from './KinshipEngine.js';
+import {
+  calculateKinshipTerm, calculateAllKinshipTerms, getKinshipBoxesForPerson, DEFAULT_KINSHIP_BOX_RULES,
+  makeLineageKey, parseLineageKey, lineageKeyOf, isSameLineage, zoneHasLineage, markMarriageSeparatedLineages,
+} from './KinshipEngine.js';
 
 // A snapshot of the app's REAL kinship_term_rules table (pulled from a live,
 // signed-in session's cache on 2026-08-24) -- not hand-picked or invented.
@@ -305,5 +308,218 @@ describe('Mock family tree: direct spouse (bypasses zone entirely)', () => {
   it('resolves symmetrically from both directions', () => {
     expect(term(Root, RootWife)).toBe('Madu Jan');
     expect(term(RootWife, Root)).toBe('Madu Wa');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "Whatever clan marries into the family is Mayu, whether or not it has the
+// same clan name." (Project owner, 2026-10-05.) Same-clan marriages are rare,
+// but when one is recorded the wife's birth family is still Mayu to the
+// husband's family, and his is Dama to hers -- for every marriage in the
+// tree, not only the root's parents.
+//
+// Everyone below is clan "Marip". Unless a test says otherwise, nobody has a
+// branch or family name recorded, so recorded lineage alone cannot tell the
+// families apart.
+//
+//   MomFather(Marip)
+//     +-- Mom === Dad(Marip)
+//     |          +-- Bro
+//     |          +-- Root
+//     |          +-- Sis === SisHusband(Marip) [HusbandFather(Marip)]
+//     +-- MomBrother === MomBroWife(Marip) [MomBroWifeFather(Marip)]
+//           +-- MomBroSon -- MomBroGrandchild
+// ---------------------------------------------------------------------------
+describe('Same-clan marriages: the marriage itself creates the Mayu / Dama tie', () => {
+  const build = ({ dadSide = {}, momSide = {} } = {}) => {
+    const people = [
+      male('sDad', 'Marip', dadSide),
+      male('sRoot', 'Marip', { dob: '1990-01-01', ...dadSide }),
+      male('sBro', 'Marip', { dob: '1985-01-01', ...dadSide }),
+      female('sSis', 'Marip', { dob: '1995-01-01', ...dadSide }),
+      male('sMomFather', 'Marip', momSide),
+      female('sMom', 'Marip', momSide),
+      male('sMomBrother', 'Marip', momSide),
+      male('sMomBroSon', 'Marip', momSide),
+      male('sMomBroGrandchild', 'Marip', momSide),
+      male('sMomBroWifeFather', 'Marip'),
+      female('sMomBroWife', 'Marip'),
+      male('sHusbandFather', 'Marip'),
+      male('sSisHusband', 'Marip'),
+      male('sStranger', 'Marip'), // in the tree, linked to nobody
+    ];
+    const links = [
+      spouse('sDad', 'sMom'),
+      parent('sDad', 'sRoot'), parent('sMom', 'sRoot'),
+      parent('sDad', 'sBro'), parent('sMom', 'sBro'),
+      parent('sDad', 'sSis'), parent('sMom', 'sSis'),
+      parent('sMomFather', 'sMom'), parent('sMomFather', 'sMomBrother'),
+      spouse('sMomBrother', 'sMomBroWife'),
+      parent('sMomBroWifeFather', 'sMomBroWife'),
+      parent('sMomBrother', 'sMomBroSon'), parent('sMomBroWife', 'sMomBroSon'),
+      parent('sMomBroSon', 'sMomBroGrandchild'),
+      spouse('sSis', 'sSisHusband'),
+      parent('sHusbandFather', 'sSisHusband'),
+    ];
+    const marked = markMarriageSeparatedLineages(people, links);
+    const who = (id) => marked.find((p) => p.id === id);
+    const boxes = getKinshipBoxesForPerson('sRoot', marked, links, DEFAULT_KINSHIP_BOX_RULES, null);
+    const zonesOf = (id) => Object.keys(boxes).filter((zone) => zoneHasLineage(boxes[zone], who(id)));
+    const termFor = (id) => calculateKinshipTerm(
+      who('sRoot'), who(id), marked, links, DEFAULT_KINSHIP_BOX_RULES, PRODUCTION_TERM_RULES_SNAPSHOT,
+    );
+    return { people, links, marked, who, boxes, zonesOf, termFor };
+  };
+
+  it("without the marking step the mother's family is lost from Mayu (the old behaviour)", () => {
+    const { people, links } = build();
+    const boxes = getKinshipBoxesForPerson('sRoot', people, links, DEFAULT_KINSHIP_BOX_RULES, null);
+    expect(boxes.Mayu.size).toBe(0);
+    expect(boxes.Dama.size).toBe(0);
+  });
+
+  it("puts the mother's birth family in Mayu and keeps the root's own family out of it", () => {
+    const { zonesOf } = build();
+    expect(zonesOf('sMom')).toEqual(['Mayu']);
+    expect(zonesOf('sMomFather')).toEqual(['Mayu']);
+    expect(zonesOf('sMomBrother')).toEqual(['Mayu']);
+    expect(zonesOf('sRoot')).toEqual(['Kahpu Kanau']);
+    expect(zonesOf('sDad')).toEqual(['Kahpu Kanau']);
+    expect(zonesOf('sBro')).toEqual(['Kahpu Kanau']);
+  });
+
+  it("holds for every marriage: a sister's husband's family is Dama", () => {
+    const { zonesOf } = build();
+    expect(zonesOf('sSisHusband')).toEqual(['Dama']);
+    expect(zonesOf('sHusbandFather')).toEqual(['Dama']);
+  });
+
+  it("holds further out: the mother's brother's wife's family is Mayu ni a Mayu", () => {
+    const { zonesOf } = build();
+    expect(zonesOf('sMomBroWife')).toEqual(['Mayu ni a Mayu']);
+    expect(zonesOf('sMomBroWifeFather')).toEqual(['Mayu ni a Mayu']);
+  });
+
+  it('gives the same kinship terms as when the clans have different names', () => {
+    const { termFor } = build();
+    expect(termFor('sMom')?.youCallThem).toBe('Kanu');
+    expect(termFor('sMomBrother')?.youCallThem).toBe('Katsa');
+    expect(termFor('sSisHusband')?.youCallThem).toBe('Kahkau');
+    expect(termFor('sMomBroWife')?.youCallThem).toBe('Kani');
+    expect(termFor('sBro')?.youCallThem).toBe('Kahpu');
+    // Reached through the clan-level zones, not a direct relationship -- the
+    // part that depended on the boxes being right.
+    expect(termFor('sMomBroGrandchild')?.zone).toBe('Mayu');
+    expect(termFor('sMomBroGrandchild')?.youCallThem).toBe('Kanam');
+  });
+
+  it('works when a branch is recorded for only one of the two families', () => {
+    const { zonesOf } = build({ momSide: { subClanId: 'labya' } });
+    expect(zonesOf('sMom')).toEqual(['Mayu']);
+    expect(zonesOf('sRoot')).toEqual(['Kahpu Kanau']);
+  });
+
+  it('works when the two families have the very same clan, branch and family name', () => {
+    const same = { subClanId: 'labya', familyNameId: 'gam' };
+    const { zonesOf } = build({ dadSide: same, momSide: same });
+    expect(zonesOf('sMom')).toEqual(['Mayu']);
+    expect(zonesOf('sRoot')).toEqual(['Kahpu Kanau']);
+  });
+
+  it('leaves an unconnected person of that clan as own clan by default, but possible in each zone', () => {
+    const { zonesOf, termFor } = build();
+    // Nothing links the stranger to either family, so the engine can't rule
+    // any of them out...
+    expect(zonesOf('sStranger')).toEqual(['Kahpu Kanau', 'Mayu', 'Dama', 'Mayu ni a Mayu']);
+    // ...and, as before, treats them as the root's own clan.
+    expect(termFor('sStranger')?.zone).toBe('Kahpu Kanau');
+  });
+
+  it('a clan-only lookup of that clan offers every zone a family of it is in', () => {
+    const { marked, links, who } = build();
+    const results = calculateAllKinshipTerms(
+      who('sRoot'), { id: 'stranger', clanId: 'Marip', gender: 'Male' }, marked, links,
+      DEFAULT_KINSHIP_BOX_RULES, PRODUCTION_TERM_RULES_SNAPSHOT, 0, 'older',
+    );
+    expect(results.map((r) => r.zone)).toEqual(['Kahpu Kanau', 'Mayu', 'Dama', 'Mayu ni a Mayu']);
+  });
+
+  it('marks only the families such a marriage joins', () => {
+    const { marked, who } = build();
+    expect(who('sRoot').lineageGroup).toBe(who('sDad').lineageGroup);
+    expect(who('sRoot').lineageGroup).toBe(who('sSis').lineageGroup);
+    expect(who('sMom').lineageGroup).toBe(who('sMomBroGrandchild').lineageGroup);
+    expect(who('sMom').lineageGroup).not.toBe(who('sRoot').lineageGroup);
+    expect(who('sStranger').lineageGroup).toBeUndefined();
+    expect(marked.filter((p) => p.lineageGroup).length).toBe(13);
+  });
+
+  it('does not depend on the order relationships are stored in', () => {
+    const { people, links, marked } = build();
+    const reversed = markMarriageSeparatedLineages(people, [...links].reverse());
+    expect(reversed.map((p) => p.lineageGroup)).toEqual(marked.map((p) => p.lineageGroup));
+  });
+});
+
+describe('markMarriageSeparatedLineages: trees it must leave alone', () => {
+  it('returns the very same array when no marriage needs it', () => {
+    // The main mock family: every marriage is between different clans.
+    expect(markMarriageSeparatedLineages(persons, relationships)).toBe(persons);
+  });
+
+  it('leaves a same-clan marriage alone when recorded branches already tell the families apart', () => {
+    const people = [
+      male('bDad', 'Marip', { subClanId: 'hpung' }), female('bMom', 'Marip', { subClanId: 'labya' }),
+      male('bRoot', 'Marip', { subClanId: 'hpung' }),
+    ];
+    const links = [spouse('bDad', 'bMom'), parent('bDad', 'bRoot'), parent('bMom', 'bRoot')];
+    expect(markMarriageSeparatedLineages(people, links)).toBe(people);
+    const boxes = getKinshipBoxesForPerson('bRoot', people, links, DEFAULT_KINSHIP_BOX_RULES, null);
+    expect(boxes.Mayu.has(makeLineageKey('Marip', 'labya'))).toBe(true);
+  });
+
+  it('does not separate a husband and wife recorded in the same patriline', () => {
+    // Children of two brothers: the tree itself says they are one lineage.
+    const people = [
+      male('cGrandfather', 'Marip'), male('cUncleA', 'Marip'), male('cUncleB', 'Marip'),
+      male('cHusband', 'Marip'), female('cWife', 'Marip'),
+    ];
+    const links = [
+      parent('cGrandfather', 'cUncleA'), parent('cGrandfather', 'cUncleB'),
+      parent('cUncleA', 'cHusband'), parent('cUncleB', 'cWife'),
+      spouse('cHusband', 'cWife'),
+    ];
+    expect(markMarriageSeparatedLineages(people, links)).toBe(people);
+  });
+
+  it("does not put a child in the mother's line", () => {
+    const people = [male('dDad', 'Marip'), female('dMom', 'Marip'), male('dChild', 'Marip')];
+    const links = [spouse('dDad', 'dMom'), parent('dDad', 'dChild'), parent('dMom', 'dChild')];
+    const marked = markMarriageSeparatedLineages(people, links);
+    const group = (id) => marked.find((p) => p.id === id).lineageGroup;
+    expect(group('dChild')).toBe(group('dDad'));
+    expect(group('dChild')).not.toBe(group('dMom'));
+  });
+});
+
+describe('Lineage keys with a lineage group', () => {
+  it('keep the three-part form when there is no group', () => {
+    expect(makeLineageKey('Marip', 'labya', 'gam')).toBe('Marip::labya::gam');
+    expect(parseLineageKey('Marip::labya::gam')).toEqual({ clanId: 'Marip', subClanId: 'labya', familyNameId: 'gam' });
+    expect(lineageKeyOf({ clanId: 'Marip' })).toBe('Marip::::');
+  });
+
+  it('round-trip the group as a fourth part', () => {
+    const key = lineageKeyOf({ clanId: 'Marip', lineageGroup: 'm:p1' });
+    expect(key).toBe('Marip::::::m:p1');
+    expect(parseLineageKey(key)).toEqual({ clanId: 'Marip', subClanId: null, familyNameId: null, lineageGroup: 'm:p1' });
+  });
+
+  it('two different groups are different lineages; a missing group proves nothing', () => {
+    const a = { clanId: 'Marip', lineageGroup: 'm:p1' };
+    const b = { clanId: 'Marip', lineageGroup: 'm:p2' };
+    expect(isSameLineage(a, b)).toBe(false);
+    expect(isSameLineage(a, { clanId: 'Marip' })).toBe(true);
+    expect(isSameLineage(a, { clanId: 'Marip', lineageGroup: 'm:p1' })).toBe(true);
   });
 });

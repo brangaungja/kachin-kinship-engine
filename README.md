@@ -25,7 +25,7 @@ pinned to an exact commit so both apps always build the same engine:
 To ship an engine change: push it here (CI runs the tests), update the hash
 in **both** apps' `package.json`, run `npm install`, and restart the app's
 dev server (Vite caches pre-bundled dependencies). Releases are tagged
-(`v2.0.0`, ...) and listed in `CHANGELOG.md`; pin to a tagged commit when
+(`v2.1.0`, ...) and listed in `CHANGELOG.md`; pin to a tagged commit when
 you can.
 
 ## Lineage model
@@ -36,6 +36,18 @@ family name (`familyNameId`)**. Alliance-zone sets hold lineage keys
 not bare clan ids. Two lineages are the same (`isSameLineage`) unless they
 differ in clan, or *both* record a branch (or family name) and those differ:
 missing data never proves a split.
+
+**A marriage does prove a split.** "Whatever clan marries into the family is
+Mayu, whether or not it has the same clan name." When a husband and wife have
+the same recorded lineage (both "Marip", nothing else recorded), the names
+alone cannot tell their families apart, and the Mayu / Dama tie would be lost.
+Call **`markMarriageSeparatedLineages(persons, relationships)`** once on a
+tree's people and use the result everywhere: it puts a `lineageGroup` marker
+on the two families such a marriage joins (a family = a recorded patriline:
+father-to-child and sibling links), and `isSameLineage` treats two different
+markers as different lineages. A lineage key then has an optional fourth part
+(`"clan::sub::fam::group"`). Trees with no such marriage come back untouched
+(the same array), so they behave exactly as before.
 
 ## What it computes
 
@@ -74,7 +86,8 @@ missing data never proves a split.
   marriage with unknown gender). It never changes a calculation.
 
 - **`findClanConnectionPath`**, **`isSameLineage`**, **`makeLineageKey`** /
-  **`parseLineageKey`**, **`zoneHasLineage`** -- lineage helpers (see above).
+  **`parseLineageKey`** / **`lineageKeyOf`**, **`zoneHasLineage`**,
+  **`markMarriageSeparatedLineages`** -- lineage helpers (see above).
 
 See `src/KinshipEngine.js` for full function signatures and inline comments
 on the less obvious rules (multi-box tie-break priority, the great-grandparent

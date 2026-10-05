@@ -12,15 +12,26 @@
 // key by the full (clan, sub-clan, family name) triple instead.
 export const LINEAGE_KEY_SEP = '::';
 
-export const makeLineageKey = (clanId, subClanId = null, familyNameId = null) =>
-  `${clanId}${LINEAGE_KEY_SEP}${subClanId || ''}${LINEAGE_KEY_SEP}${familyNameId || ''}`;
+// `lineageGroup` is an optional fourth part: a marker that two families are
+// known to be different lineages because a marriage links them, even when
+// their recorded clan / branch / family name are identical (see
+// markMarriageSeparatedLineages below). Keys without one are unchanged
+// three-part keys, so stored manual entries and older callers keep working.
+export const makeLineageKey = (clanId, subClanId = null, familyNameId = null, lineageGroup = null) =>
+  `${clanId}${LINEAGE_KEY_SEP}${subClanId || ''}${LINEAGE_KEY_SEP}${familyNameId || ''}`
+  + (lineageGroup ? `${LINEAGE_KEY_SEP}${lineageGroup}` : '');
+
+/** The lineage key of a person (or any object with the lineage fields). */
+export const lineageKeyOf = (person) =>
+  makeLineageKey(person.clanId, person.subClanId, person.familyNameId, person.lineageGroup);
 
 export const parseLineageKey = (key) => {
-  const [clanId, subClanId, familyNameId] = String(key).split(LINEAGE_KEY_SEP);
+  const [clanId, subClanId, familyNameId, lineageGroup] = String(key).split(LINEAGE_KEY_SEP);
   return {
     clanId: clanId || null,
     subClanId: subClanId || null,
     familyNameId: familyNameId || null,
+    ...(lineageGroup ? { lineageGroup } : {}),
   };
 };
 
@@ -39,6 +50,12 @@ export const isSameLineage = (a, b) => {
   const aFam = a?.familyNameId ?? null;
   const bFam = b?.familyNameId ?? null;
   if (aFam && bFam && aFam !== bFam) return false;
+  // Two families a marriage has shown to be different lineages stay
+  // different, whatever their recorded names. Like the fields above, a
+  // missing marker on either side proves nothing.
+  const aGroup = a?.lineageGroup ?? null;
+  const bGroup = b?.lineageGroup ?? null;
+  if (aGroup && bGroup && aGroup !== bGroup) return false;
   return true;
 };
 
@@ -134,6 +151,93 @@ export const resolveDefaultAllianceZone = (speaker, target, defaultRules = []) =
   return match?.defaultAlliance ?? match?.default_alliance ?? null;
 };
 
+const isMale = (person) => person?.gender === 'Male' || person?.gender === 'M';
+
+/**
+ * "Whatever clan marries into the family is Mayu, whether or not it has the
+ * same clan name."
+ *
+ * Alliance zones are worked out from recorded lineage (clan, branch, family
+ * name), and missing data is never taken as proof that two people are
+ * different lineages. On its own that loses a marriage between two families
+ * whose recorded lineage is the same -- both "Marip" with no branch recorded,
+ * say: the wife's family looks like the husband's own, so no Mayu / Dama tie
+ * is created. But people do not marry within their own lineage, so the
+ * marriage itself is the proof the two families are different.
+ *
+ * This returns `persons` with a `lineageGroup` marker on everyone in two
+ * such families, so the rest of the engine keeps them apart. A family here
+ * is a patriline as recorded in the tree: people joined by father-to-child
+ * and sibling links (a child belongs to the father's line, not the
+ * mother's).
+ *
+ * Only families joined by a marriage that recorded lineage alone could not
+ * tell apart are marked. Everyone else is returned untouched, and when
+ * nothing needs marking the very same array is returned -- so trees without
+ * such a marriage behave exactly as before.
+ *
+ * Call it once on a tree's people before any other engine function, and use
+ * the result (including for the speaker / root person) everywhere.
+ *
+ * Not separated: a husband and wife who are in the SAME recorded patriline
+ * (e.g. children of two brothers). The tree itself says they are one
+ * lineage, so there is nothing to tell apart.
+ */
+export const markMarriageSeparatedLineages = (persons = [], relationships = []) => {
+  const byId = new Map(persons.map((p) => [p.id, p]));
+
+  // Union-find over person ids: one set per recorded patriline.
+  const parentOf = new Map(persons.map((p) => [p.id, p.id]));
+  const find = (id) => {
+    let root = id;
+    while (parentOf.get(root) !== root) root = parentOf.get(root);
+    let cursor = id;
+    while (parentOf.get(cursor) !== root) {
+      const next = parentOf.get(cursor);
+      parentOf.set(cursor, root);
+      cursor = next;
+    }
+    return root;
+  };
+  // Smaller id becomes the representative, so the marker doesn't depend on
+  // the order relationships happen to be stored in.
+  const union = (a, b) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra === rb) return;
+    if (String(ra) < String(rb)) parentOf.set(rb, ra);
+    else parentOf.set(ra, rb);
+  };
+
+  relationships.forEach((rel) => {
+    const p1 = byId.get(rel.person1Id);
+    const p2 = byId.get(rel.person2Id);
+    if (!p1 || !p2 || !isSameLineage(p1, p2)) return;
+    if (rel.type === 'sibling') union(p1.id, p2.id);
+    // person1 is the parent; only a father passes his lineage on.
+    if (rel.type === 'parent' && isMale(p1)) union(p1.id, p2.id);
+  });
+
+  const marked = new Set();
+  relationships.forEach((rel) => {
+    if (rel.type !== 'spouse') return;
+    const p1 = byId.get(rel.person1Id);
+    const p2 = byId.get(rel.person2Id);
+    if (!p1 || !p2 || !isSameLineage(p1, p2)) return;
+    const g1 = find(p1.id);
+    const g2 = find(p2.id);
+    if (g1 === g2) return;
+    marked.add(g1);
+    marked.add(g2);
+  });
+
+  if (marked.size === 0) return persons;
+  return persons.map((p) => {
+    const group = find(p.id);
+    return marked.has(group) ? { ...p, lineageGroup: `m:${group}` } : p;
+  });
+};
+
 export const DEFAULT_KINSHIP_BOX_RULES = [
   { sourceBox: 'Kahpu Kanau', targetBox: 'Mayu', sourceGender: 'Male', targetGender: 'Female' },
   { sourceBox: 'Kahpu Kanau', targetBox: 'Dama', sourceGender: 'Female', targetGender: 'Male' },
@@ -177,7 +281,7 @@ export const getKinshipBoxesForPerson = (
   };
 
   if (!rootClanId) return boxes;
-  boxes['Kahpu Kanau'].add(makeLineageKey(rootPerson.clanId, rootPerson.subClanId, rootPerson.familyNameId));
+  boxes['Kahpu Kanau'].add(lineageKeyOf(rootPerson));
 
   // Propagate to a fixed point. Each pass can only ADD lineage keys to the
   // zone sets, and there are finitely many (zone, lineage) pairs, so the loop
@@ -203,7 +307,9 @@ export const getKinshipBoxesForPerson = (
           // clan "Marip" but a different branch than the root) could never
           // enter Mayu/Dama at all, since her clanId always equaled the
           // root's. isSameLineage only excludes a spouse CONFIRMED to be
-          // the same lineage, not merely the same clan name.
+          // the same lineage, not merely the same clan name. (A spouse whose
+          // recorded lineage is identical to the root's is told apart by
+          // markMarriageSeparatedLineages, when the caller has applied it.)
           if (zoneHasLineage(sourceLineages, sourceP) &&
              (rule.sourceGender === 'Any' || sourceP.gender === rule.sourceGender) &&
              (rule.targetGender === 'Any' || targetP.gender === rule.targetGender) &&
@@ -219,7 +325,7 @@ export const getKinshipBoxesForPerson = (
 
               if (!boxes[rule.targetBox]) boxes[rule.targetBox] = new Set();
 
-              const targetKey = makeLineageKey(targetP.clanId, targetP.subClanId, targetP.familyNameId);
+              const targetKey = lineageKeyOf(targetP);
               if (!boxes[rule.targetBox].has(targetKey)) {
                  boxes[rule.targetBox].add(targetKey);
                  added = true;
@@ -1268,7 +1374,7 @@ export const computeAllianceZoneBoxes = ({
     // different-branch relative must not be unconditionally shortcut into
     // Kahpu Kanau.
     if (isSameLineage(person, rootPerson)) {
-      boxes['Kahpu Kanau'].add(makeLineageKey(person.clanId, person.subClanId, person.familyNameId));
+      boxes['Kahpu Kanau'].add(lineageKeyOf(person));
       return;
     }
 
@@ -1291,7 +1397,7 @@ export const computeAllianceZoneBoxes = ({
       if (kinship.zone === 'Kahpu Kanau' && !isSameLineage(person, rootPerson)) {
         return;
       }
-      boxes[kinship.zone].add(makeLineageKey(person.clanId, person.subClanId, person.familyNameId));
+      boxes[kinship.zone].add(lineageKeyOf(person));
     }
   });
 

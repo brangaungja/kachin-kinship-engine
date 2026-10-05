@@ -4,6 +4,29 @@ Versions follow [semantic versioning](https://semver.org/): a **major**
 bump means consuming apps may need code changes, **minor** adds something
 without breaking callers, **patch** is a fix.
 
+## 2.1.0 — 2026-10-05
+
+### Added
+- **A marriage always creates the Mayu / Dama tie, even between two families
+  of the same clan.** `markMarriageSeparatedLineages(persons, relationships)`
+  marks the two families joined by a marriage that recorded lineage alone
+  cannot tell apart (same clan, and no differing branch / family name
+  recorded on both sides) with a `lineageGroup`. Call it once on a tree's
+  people and pass the result to the other functions. Before this, such a
+  marriage produced no Mayu / Dama tie at all: the wife's family looked like
+  the husband's own.
+- `isSameLineage` treats two different `lineageGroup` markers as different
+  lineages (a missing marker, like a missing branch, proves nothing).
+- `makeLineageKey` takes an optional fourth argument and `parseLineageKey`
+  returns `lineageGroup` when a key has one; `lineageKeyOf(person)` builds a
+  person's key. Three-part keys are unchanged, so stored entries and existing
+  callers keep working.
+
+### Unchanged
+- Callers that don't use `markMarriageSeparatedLineages` get exactly the
+  2.0.0 results, and so does any tree without such a marriage (the function
+  then returns the same array it was given).
+
 ## 2.0.0 — 2026-10-02
 
 ### Breaking
