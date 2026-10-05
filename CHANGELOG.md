@@ -4,6 +4,20 @@ Versions follow [semantic versioning](https://semver.org/): a **major**
 bump means consuming apps may need code changes, **minor** adds something
 without breaking callers, **patch** is a fix.
 
+## 2.1.2 — 2026-10-05
+
+### Fixed
+- **Fold-back rules loaded from a database were ignored.** The two rules that
+  fold a "Dama of your Mayu" / "Mayu of your Dama" family into Kahpu Kanau
+  were only honoured when the rule object carried `foldBack: true`. The apps
+  load rules from the `kinship_rules` table, which has no such column, so
+  both rules were silently dropped and anyone reached only through them (e.g.
+  a mother's father's sister's husband) got no kinship term. They are now
+  recognised by their shape (source zone + genders); the flag still works.
+
+### Added
+- `isFoldBackRule(rule)`.
+
 ## 2.1.1 — 2026-10-05
 
 ### Added

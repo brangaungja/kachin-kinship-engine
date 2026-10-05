@@ -246,7 +246,8 @@ export const DEFAULT_KINSHIP_BOX_RULES = [
   // Mayu ni a Dama / Dama ni a Mayu don't get a box of their own -- the marriage
   // chain loops back to the speaker's own side, so both fold into Kahpu Kanau
   // (see the elder-verification dossier's own documented remark on this).
-  // `foldBack` lets the Kahpu Kanau guard in getKinshipBoxesForPerson's
+  // `foldBack` (or simply this shape -- see isFoldBackRule) lets the Kahpu
+  // Kanau guard in getKinshipBoxesForPerson's
   // tryMatch allow through only these two known-correct cascades, not an
   // arbitrary future rule targeting Kahpu Kanau.
   //
@@ -259,6 +260,35 @@ export const DEFAULT_KINSHIP_BOX_RULES = [
   // of one of your wife-takers").
   { sourceBox: 'Dama', targetBox: 'Kahpu Kanau', sourceGender: 'Male', targetGender: 'Female', foldBack: true },
 ];
+
+const ruleGender = (g) => {
+  const value = String(g ?? '').trim().toUpperCase();
+  if (value === 'M' || value === 'MALE') return 'M';
+  if (value === 'F' || value === 'FEMALE') return 'F';
+  return 'ANY';
+};
+
+/**
+ * Is this alliance rule one of the two "fold-back" cascades -- the only
+ * rules allowed to put another family into Kahpu Kanau?
+ *
+ *   Mayu woman marries out   -> her husband's family is a Dama of your Mayu
+ *   Dama man takes a wife    -> her family is a Mayu of your Dama
+ *
+ * Both loop back to the speaker's own side. They are recognised by what
+ * they are (source zone + genders), not only by a `foldBack` flag: the apps
+ * load their rules from the database, whose kinship_rules table has no such
+ * column, so a flag-only check silently dropped both rules and anyone
+ * reached only through them got no kinship term at all.
+ */
+export const isFoldBackRule = (rule) => {
+  if (!rule || rule.targetBox !== 'Kahpu Kanau') return false;
+  if (rule.foldBack) return true;
+  const source = ruleGender(rule.sourceGender);
+  const target = ruleGender(rule.targetGender);
+  return (rule.sourceBox === 'Mayu' && source === 'F' && target === 'M')
+    || (rule.sourceBox === 'Dama' && source === 'M' && target === 'F');
+};
 
 // 1. Calculate Alliance Boxes relative to ANY speaker
 export const getKinshipBoxesForPerson = (
@@ -317,9 +347,9 @@ export const getKinshipBoxesForPerson = (
 
               // In Kachin culture, Kahpu Kanau alliance box is strictly for the root clan,
               // explicit agnatic brother clans, and the Mayu-ni-a-Dama / Dama-ni-a-Mayu
-              // fold-back cascades (marked `foldBack` above) -- any other rule that would
+              // fold-back cascades (see isFoldBackRule) -- any other rule that would
               // add a non-root lineage to Kahpu Kanau is still blocked.
-              if (rule.targetBox === 'Kahpu Kanau' && !isSameLineage(targetP, rootPerson) && !rule.foldBack) {
+              if (rule.targetBox === 'Kahpu Kanau' && !isSameLineage(targetP, rootPerson) && !isFoldBackRule(rule)) {
                 return;
               }
 

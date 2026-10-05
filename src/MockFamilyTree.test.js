@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   calculateKinshipTerm, calculateAllKinshipTerms, getKinshipBoxesForPerson, DEFAULT_KINSHIP_BOX_RULES,
   makeLineageKey, parseLineageKey, lineageKeyOf, isSameLineage, zoneHasLineage, markMarriageSeparatedLineages,
-  findClanConnectionPath,
+  findClanConnectionPath, isFoldBackRule,
 } from './KinshipEngine.js';
 
 // A snapshot of the app's REAL kinship_term_rules table (pulled from a live,
@@ -557,5 +557,95 @@ describe('findClanConnectionPath: tracing to one family among several of the sam
   it("with the root's own family, leads to the father's side", () => {
     const path = findClanConnectionPath('tRoot', 'Marip', links, people, 6, null, null, groupOf('tRoot'));
     expect(endOf(path)).toBe('tDad');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fold-back rules loaded from the database.
+//
+// Reported from production: a mother's father's sister's husband had no
+// kinship term. His family is a "Dama of your Mayu" (it took a wife from one
+// of the speaker's wife-giving families), which folds back to Kahpu Kanau.
+// The apps load alliance rules from the kinship_rules table, which has no
+// `foldBack` column, so the rule arrived without its flag and the engine
+// refused to apply it.
+//
+//   MothersFather(Tangbau) --sibling-- MFsSister(Tangbau) === Laika(Maran)
+//     +-- Mother(Tangbau) === Father(Zahkung)
+//                               +-- Wez(Zahkung)
+// ---------------------------------------------------------------------------
+describe('Fold-back rules without a foldBack flag (as the database supplies them)', () => {
+  const rulesFromDatabase = DEFAULT_KINSHIP_BOX_RULES.map((rule) => {
+    const { foldBack: _flag, ...row } = rule;
+    return row;
+  });
+  const people = [
+    male('fWez', 'Zahkung'), male('fFather', 'Zahkung'), female('fMother', 'Tangbau'),
+    male('fMothersFather', 'Tangbau'), female('fMothersMother', 'Marip'),
+    female('fMFsSister', 'Tangbau'), male('fLaika', 'Maran'),
+    // A Dama man's wife: her family is a "Mayu of your Dama".
+    female('fSister', 'Zahkung'), male('fSistersHusband', 'Lahtaw'),
+    male('fHusbandsBrother', 'Lahtaw'), female('fBrothersWife', 'Nhkum'),
+    male('fBrothersWifesFather', 'Nhkum'),
+  ];
+  const links = [
+    spouse('fFather', 'fMother'), parent('fFather', 'fWez'), parent('fMother', 'fWez'),
+    spouse('fMothersFather', 'fMothersMother'),
+    parent('fMothersFather', 'fMother'), parent('fMothersMother', 'fMother'),
+    sibling('fMothersFather', 'fMFsSister'), spouse('fLaika', 'fMFsSister'),
+    parent('fFather', 'fSister'), spouse('fSister', 'fSistersHusband'),
+    sibling('fSistersHusband', 'fHusbandsBrother'), spouse('fHusbandsBrother', 'fBrothersWife'),
+    parent('fBrothersWifesFather', 'fBrothersWife'),
+  ];
+  const who = (id) => people.find((p) => p.id === id);
+  const termFor = (id, rules = rulesFromDatabase) => calculateKinshipTerm(
+    who('fWez'), who(id), people, links, rules, PRODUCTION_TERM_RULES_SNAPSHOT,
+  );
+
+  it("gives a mother's father's sister's husband a term: Ji, through Kahpu Kanau", () => {
+    const res = termFor('fLaika');
+    expect(res?.zone).toBe('Kahpu Kanau');
+    expect(res?.youCallThem).toBe('Ji');
+  });
+
+  it('gives the same answers as the flagged built-in rules', () => {
+    ['fLaika', 'fMFsSister', 'fMothersFather', 'fBrothersWife', 'fBrothersWifesFather'].forEach((id) => {
+      expect(termFor(id)?.youCallThem).toBe(termFor(id, DEFAULT_KINSHIP_BOX_RULES)?.youCallThem);
+      expect(termFor(id)?.zone).toBe(termFor(id, DEFAULT_KINSHIP_BOX_RULES)?.zone);
+    });
+  });
+
+  it('puts both kinds of fold-back family in the Kahpu Kanau box', () => {
+    const boxes = getKinshipBoxesForPerson('fWez', people, links, rulesFromDatabase, null);
+    expect(zoneHasLineage(boxes['Kahpu Kanau'], who('fLaika'))).toBe(true); // Dama of your Mayu
+    expect(zoneHasLineage(boxes['Kahpu Kanau'], who('fBrothersWifesFather'))).toBe(true); // Mayu of your Dama
+  });
+
+  it('still refuses any other rule that would put a different family into Kahpu Kanau', () => {
+    // Not a fold-back: a Mayu MAN's wife belongs in Mayu ni a Mayu.
+    const rogue = [
+      ...rulesFromDatabase.filter((rule) => !isFoldBackRule(rule)),
+      { sourceBox: 'Mayu', targetBox: 'Kahpu Kanau', sourceGender: 'Male', targetGender: 'Female' },
+    ];
+    const boxes = getKinshipBoxesForPerson('fWez', people, links, rogue, null);
+    expect([...boxes['Kahpu Kanau']]).toEqual([lineageKeyOf(who('fWez'))]);
+  });
+});
+
+describe('isFoldBackRule', () => {
+  it('recognises the two fold-back rules by their shape, however gender is written', () => {
+    expect(isFoldBackRule({ sourceBox: 'Mayu', targetBox: 'Kahpu Kanau', sourceGender: 'Female', targetGender: 'Male' })).toBe(true);
+    expect(isFoldBackRule({ sourceBox: 'Dama', targetBox: 'Kahpu Kanau', sourceGender: 'M', targetGender: 'f' })).toBe(true);
+  });
+
+  it('honours an explicit flag', () => {
+    expect(isFoldBackRule({ sourceBox: 'Mayu', targetBox: 'Kahpu Kanau', sourceGender: 'Any', targetGender: 'Any', foldBack: true })).toBe(true);
+  });
+
+  it('is false for everything else', () => {
+    expect(isFoldBackRule({ sourceBox: 'Kahpu Kanau', targetBox: 'Mayu', sourceGender: 'Male', targetGender: 'Female' })).toBe(false);
+    expect(isFoldBackRule({ sourceBox: 'Mayu', targetBox: 'Kahpu Kanau', sourceGender: 'Male', targetGender: 'Female' })).toBe(false);
+    expect(isFoldBackRule({ sourceBox: 'Mayu', targetBox: 'Mayu ni a Mayu', sourceGender: 'Female', targetGender: 'Male', foldBack: true })).toBe(false);
+    expect(isFoldBackRule(null)).toBe(false);
   });
 });
