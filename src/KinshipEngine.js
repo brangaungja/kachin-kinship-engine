@@ -96,6 +96,18 @@ const ruleSideSpecificity = (rule, prefix) => {
   return score;
 };
 
+// Which of two default rules wins: the more specific one, counting BOTH
+// sides (a rule written for one family of the speaker's clan beats a
+// clan-wide one, whatever their priorities), then the higher priority.
+// One comparison for every place default rules are applied, so they cannot
+// disagree about which rule that is.
+const compareDefaultRules = (a, b) => {
+  const specDiff = (ruleSideSpecificity(b, 'speaker') + ruleSideSpecificity(b, 'target'))
+    - (ruleSideSpecificity(a, 'speaker') + ruleSideSpecificity(a, 'target'));
+  if (specDiff !== 0) return specDiff;
+  return (b.priority ?? 0) - (a.priority ?? 0);
+};
+
 // Normalizes either a bare clanId string (old call style, still supported)
 // or a full {clanId, subClanId, familyNameId} lineage object.
 const asLineage = (speaker) => (typeof speaker === 'string' ? { clanId: speaker } : speaker);
@@ -108,11 +120,7 @@ export const applyDefaultKinshipRulesToBoxes = (speaker, boxes, defaultRules = [
   const byTarget = new Map();
   [...defaultRules]
     .filter((r) => ruleSideMatches(r, 'speaker', speakerLineage))
-    .sort((a, b) => {
-      const specDiff = ruleSideSpecificity(b, 'target') - ruleSideSpecificity(a, 'target');
-      if (specDiff !== 0) return specDiff;
-      return (b.priority ?? 0) - (a.priority ?? 0);
-    })
+    .sort(compareDefaultRules)
     .forEach((rule) => {
       const targetClanId = rule.targetClanId ?? rule.target_clan_id;
       const targetSubClanId = rule.targetSubClanId ?? rule.target_sub_clan_id ?? null;
@@ -141,12 +149,7 @@ export const resolveDefaultAllianceZone = (speaker, target, defaultRules = []) =
 
   const match = [...defaultRules]
     .filter((r) => ruleSideMatches(r, 'speaker', speakerLineage) && ruleSideMatches(r, 'target', targetLineage))
-    .sort((a, b) => {
-      const specDiff = (ruleSideSpecificity(b, 'speaker') + ruleSideSpecificity(b, 'target'))
-        - (ruleSideSpecificity(a, 'speaker') + ruleSideSpecificity(a, 'target'));
-      if (specDiff !== 0) return specDiff;
-      return (b.priority ?? 0) - (a.priority ?? 0);
-    })[0];
+    .sort(compareDefaultRules)[0];
 
   return match?.defaultAlliance ?? match?.default_alliance ?? null;
 };

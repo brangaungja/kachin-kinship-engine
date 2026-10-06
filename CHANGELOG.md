@@ -4,6 +4,17 @@ Versions follow [semantic versioning](https://semver.org/): a **major**
 bump means consuming apps may need code changes, **minor** adds something
 without breaking callers, **patch** is a fix.
 
+## 2.1.4 — 2026-10-06
+
+### Fixed
+- **Two default rules that disagree could give different answers in two
+  places.** `applyDefaultKinshipRulesToBoxes` ranked rules by how specific
+  the target side was and then by priority; `resolveDefaultAllianceZone`
+  counted both sides. So a rule written for one family of the speaker's clan
+  lost, in the boxes, to a clan-wide rule with a higher priority, while the
+  direct answer correctly chose it. Both now use one comparison: the more
+  specific rule on speaker and target sides together wins, then priority.
+
 ## 2.1.3 — 2026-10-05
 
 ### Added

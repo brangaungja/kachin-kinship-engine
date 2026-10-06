@@ -10,6 +10,7 @@ import {
   allianceBoxesToRecords,
   allianceRecordsToBoxes,
   resolveDefaultAllianceZone,
+  applyDefaultKinshipRulesToBoxes,
   findClanConnectionPath,
   isSameLineage,
   DEFAULT_KINSHIP_BOX_RULES,
@@ -777,5 +778,41 @@ describe('birth order when the dates cannot decide', () => {
   it('has nothing to say when either sibling has no date and no order', () => {
     expect(compareSiblingOrder({ id: 'a' }, { id: 'b', dob: '1990' })).toBeNull();
     expect(siblingOrderKey(null)).toBeNull();
+  });
+});
+
+describe('two default rules that disagree', () => {
+  // A clan-wide rule with the higher priority, and one written for family
+  // A1 of the speaker's clan.
+  const rules = [
+    { speakerClanId: 'A', targetClanId: 'B', defaultAlliance: 'Mayu', priority: 10 },
+    { speakerClanId: 'A', speakerFamilyNameId: 'A1', targetClanId: 'B', defaultAlliance: 'Dama', priority: 1 },
+  ];
+  const zonesOf = (speaker, clanId) => {
+    const boxes = applyDefaultKinshipRulesToBoxes(speaker, {}, rules);
+    return Object.keys(boxes).filter((zone) => [...boxes[zone]].some((key) => key.startsWith(`${clanId}::`)));
+  };
+
+  it('gives a speaker of that family the rule written for it, in the boxes as in the direct answer', () => {
+    const speaker = { clanId: 'A', familyNameId: 'A1' };
+    expect(resolveDefaultAllianceZone(speaker, { clanId: 'B' }, rules)).toBe('Dama');
+    expect(zonesOf(speaker, 'B')).toEqual(['Dama']);
+  });
+
+  it('gives everyone else in the clan the clan-wide rule', () => {
+    const other = { clanId: 'A', familyNameId: 'A2' };
+    expect(resolveDefaultAllianceZone(other, { clanId: 'B' }, rules)).toBe('Mayu');
+    expect(zonesOf(other, 'B')).toEqual(['Mayu']);
+    expect(zonesOf('A', 'B')).toEqual(['Mayu']);
+  });
+
+  it('still lets priority decide between equally specific rules', () => {
+    const equal = [
+      { speakerClanId: 'A', targetClanId: 'B', defaultAlliance: 'Mayu', priority: 1 },
+      { speakerClanId: 'A', targetClanId: 'B', defaultAlliance: 'Dama', priority: 5 },
+    ];
+    const boxes = applyDefaultKinshipRulesToBoxes('A', {}, equal);
+    expect(Object.keys(boxes)).toEqual(['Dama']);
+    expect(resolveDefaultAllianceZone('A', 'B', equal)).toBe('Dama');
   });
 });

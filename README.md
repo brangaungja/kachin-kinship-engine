@@ -25,7 +25,7 @@ pinned to an exact commit so both apps always build the same engine:
 To ship an engine change: push it here (CI runs the tests), update the hash
 in **both** apps' `package.json`, run `npm install`, and restart the app's
 dev server (Vite caches pre-bundled dependencies). Releases are tagged
-(`v2.1.3`, ...) and listed in `CHANGELOG.md`; pin to a tagged commit when
+(`v2.1.4`, ...) and listed in `CHANGELOG.md`; pin to a tagged commit when
 you can.
 
 ## Lineage model
