@@ -911,7 +911,6 @@ export const calculateKinshipTerm = (
       lineageKeys.forEach((key) => boxes[zone].add(key));
     });
   }
-  let targetZone = null;
 
   // 1. Structural Zone Inference from Family Tree (tried first). A real,
   // direct family-tree relationship (parent, sibling, spouse, parent's
@@ -925,7 +924,11 @@ export const calculateKinshipTerm = (
   // clan's box membership -- the direct path is the ground truth and must
   // win. (Only reachable with a real target -- calculateAllKinshipTerms
   // handles the clan-only lookup case, with no individual to trace, itself.)
-  {
+  // A function of the target so the Dama ni a Dama rule (1.2) can ask the
+  // same question about a man's wife.
+  const inferStructuralZone = (target) => {
+    let targetZone = null;
+
     // A. Direct Parent
     const isDirectParent = relationships.some(r => r.type === 'parent' && r.person1Id === target.id && r.person2Id === speaker.id);
     if (isDirectParent) {
@@ -1248,6 +1251,38 @@ export const calculateKinshipTerm = (
           : (headsSpousesClan ? 'Dama' : 'Dama ni a Dama');
         break;
       }
+    }
+
+    return targetZone;
+  };
+  let targetZone = inferStructuralZone(target);
+
+  // 1.2 Husband of a Dama woman (e.g. father's sister's daughter's
+  // husband): the Dama of our Dama, so Dama ni a Dama -- and so are the
+  // children who carry his clan, down the father's line. Only a wife the
+  // family tree itself shows to be Dama counts; the clan cascade below can
+  // put one clan in several boxes at once (the husband's clan may also be
+  // Mayu through some unrelated marriage), so it is not trusted here.
+  if (!targetZone) {
+    const marriedADamaWoman = (man) => relationships
+      .filter(r => r.type === 'spouse' && (r.person1Id === man.id || r.person2Id === man.id))
+      .map(r => persons.find(p => p.id === (r.person1Id === man.id ? r.person2Id : r.person1Id)))
+      .some(wife => wife?.gender === 'Female' && inferStructuralZone(wife) === 'Dama');
+
+    let current = target;
+    for (let depth = 0; current && depth < 8; depth++) {
+      if (current.id === speaker.id) break;
+      // An ancestor the tree already places some other way decides it.
+      if (current !== target && inferStructuralZone(current)) break;
+      if (current.gender === 'Male' && marriedADamaWoman(current)) {
+        targetZone = 'Dama ni a Dama';
+        break;
+      }
+      const father = relationships
+        .filter(r => r.type === 'parent' && r.person2Id === current.id)
+        .map(r => persons.find(p => p.id === r.person1Id))
+        .find(p => p?.gender === 'Male');
+      current = father || null;
     }
   }
 

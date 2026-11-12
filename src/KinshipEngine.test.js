@@ -355,6 +355,63 @@ describe('calculateKinshipTerm: structural branches (aunt/uncle, cousins, in-law
   });
 });
 
+describe('calculateKinshipTerm: the husband of a Dama woman is Dama ni a Dama', () => {
+  // Father's sister's daughter (Dama) married a man whose clan is ALSO Mayu
+  // to the speaker, through the father's brother's wife -- the owner's own
+  // tree on staging, where he used to come out as Mayu "Kahkau".
+  const tree = () => {
+    const persons = [
+      male('S', 'K'), male('F', 'K'), female('FSis', 'K'), male('FSisH', 'DamaClan'),
+      female('Cousin', 'DamaClan'), male('CousinH', 'Lahpai'),
+      male('Son', 'Lahpai'), female('Daughter', 'Lahpai'), male('GrandSon', 'Lahpai'),
+      male('FBro', 'K'), female('FBroW', 'Lahpai'),
+    ];
+    const rels = [
+      parent('F', 'S'), sibling('F', 'FSis'), spouse('FSis', 'FSisH'),
+      parent('FSisH', 'Cousin'), parent('FSis', 'Cousin'), spouse('Cousin', 'CousinH'),
+      parent('CousinH', 'Son'), parent('Cousin', 'Son'),
+      parent('CousinH', 'Daughter'), parent('Cousin', 'Daughter'),
+      parent('Son', 'GrandSon'),
+      sibling('F', 'FBro'), spouse('FBro', 'FBroW'),
+    ];
+    const of = (id) => persons.find((p) => p.id === id);
+    return { persons, rels, of };
+  };
+
+  it('resolves the husband to Dama ni a Dama, not his clan\'s other box', () => {
+    const { persons, rels, of } = tree();
+    const res = calculateKinshipTerm(of('S'), of('CousinH'), persons, rels, DEFAULT_KINSHIP_BOX_RULES, ZONE_ONLY_TERM_RULES);
+    expect(res?.zone).toBe('Dama ni a Dama');
+  });
+
+  it('resolves his children and his son\'s children to Dama ni a Dama', () => {
+    const { persons, rels, of } = tree();
+    ['Son', 'Daughter', 'GrandSon'].forEach((id) => {
+      const res = calculateKinshipTerm(of('S'), of(id), persons, rels, DEFAULT_KINSHIP_BOX_RULES, ZONE_ONLY_TERM_RULES);
+      expect(res?.zone, id).toBe('Dama ni a Dama');
+    });
+  });
+
+  it('gives the real Kashu / Ji pair', () => {
+    const { persons, rels, of } = tree();
+    const rules = [
+      { alliance_zone: 'Dama ni a Dama', generation: 0, relative_age: 'any', target_gender: 'any', speaker_gender: 'M', term_you_call_them: 'Kashu', term_they_call_you: 'Ji' },
+      { alliance_zone: 'Dama ni a Dama', generation: -1, relative_age: 'any', target_gender: 'any', speaker_gender: 'M', term_you_call_them: 'Kashu', term_they_call_you: 'Ji' },
+    ];
+    const husband = calculateKinshipTerm(of('S'), of('CousinH'), persons, rels, DEFAULT_KINSHIP_BOX_RULES, rules);
+    expect([husband?.youCallThem, husband?.theyCallYou]).toEqual(['Kashu', 'Ji']);
+    const son = calculateKinshipTerm(of('S'), of('Son'), persons, rels, DEFAULT_KINSHIP_BOX_RULES, rules);
+    expect([son?.youCallThem, son?.theyCallYou]).toEqual(['Kashu', 'Ji']);
+  });
+
+  it('keeps a sister\'s husband as Dama (she is Kahpu Kanau, not Dama)', () => {
+    const persons = [male('S', 'K'), female('Sis', 'K'), male('SisH', 'DamaClan')];
+    const rels = [sibling('S', 'Sis'), spouse('Sis', 'SisH')];
+    const res = calculateKinshipTerm(persons[0], persons[2], persons, rels, DEFAULT_KINSHIP_BOX_RULES, ZONE_ONLY_TERM_RULES);
+    expect(res?.zone).toBe('Dama');
+  });
+});
+
 describe('calculateKinshipTerm: ancestor/descendant chains (grandparent fix)', () => {
   // Regression coverage for the bug where a grandparent added before their
   // own spouse existed in the tree resolved to no kinship term at all,

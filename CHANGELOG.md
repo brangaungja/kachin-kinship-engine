@@ -4,6 +4,18 @@ Versions follow [semantic versioning](https://semver.org/): a **major**
 bump means consuming apps may need code changes, **minor** adds something
 without breaking callers, **patch** is a fix.
 
+## 2.1.5 — 2026-11-12
+
+### Fixed
+- **The husband of a Dama woman is Dama ni a Dama.** A father's sister's
+  daughter's husband had no family-tree rule, so his zone came from the
+  clan cascade, and when his clan was also Mayu through some other marriage
+  he came out as Mayu ("Kahkau") instead of Dama ni a Dama ("Kashu", who
+  calls the speaker "Ji"). A man whose wife the family tree itself shows to
+  be Dama is now Dama ni a Dama, and so are the children who carry his clan,
+  down the father's line. The family-tree rules are now one inner function
+  (`inferStructuralZone`) so the same question can be asked about the wife.
+
 ## 2.1.4 — 2026-10-06
 
 ### Fixed
