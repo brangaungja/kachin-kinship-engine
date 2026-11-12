@@ -355,6 +355,59 @@ describe('calculateKinshipTerm: structural branches (aunt/uncle, cousins, in-law
   });
 });
 
+describe("calculateKinshipTerm: children of siblings and of a spouse's siblings", () => {
+  // The owner's own terms (2026-11-12), as the staging dictionary has them.
+  const rules = [
+    { alliance_zone: 'Mayu', generation: -1, relative_age: 'any', target_gender: 'any', speaker_gender: 'M', term_you_call_them: 'Kanam', term_they_call_you: 'Kagu' },
+    { alliance_zone: 'Kahpu Kanau', generation: -1, relative_age: 'any', target_gender: 'any', speaker_gender: 'M', term_you_call_them: 'Kasha', term_they_call_you: 'Kawa' },
+    { alliance_zone: 'Dama', generation: -1, relative_age: 'any', target_gender: 'any', speaker_gender: 'M', term_you_call_them: 'Kahkri', term_they_call_you: 'Katsa' },
+  ];
+  const termsOf = (persons, rels, targetId) => {
+    const res = calculateKinshipTerm(persons[0], persons.find((p) => p.id === targetId), persons, rels, DEFAULT_KINSHIP_BOX_RULES, rules);
+    return [res?.zone, res?.youCallThem, res?.theyCallYou];
+  };
+
+  it("gives a wife's brother's child Mayu: Kanam, who answers Kagu", () => {
+    const persons = [male('S', 'K'), female('W', 'WifeClan'), male('WB', 'WifeClan'), female('WBW', 'Other'), female('Child', 'WifeClan')];
+    const rels = [spouse('S', 'W'), sibling('W', 'WB'), spouse('WB', 'WBW'), parent('WBW', 'Child'), parent('WB', 'Child')];
+    expect(termsOf(persons, rels, 'Child')).toEqual(['Mayu', 'Kanam', 'Kagu']);
+  });
+
+  it("gives a wife's sister's child Kahpu Kanau: Kasha, who answers Kawa", () => {
+    const persons = [male('S', 'K'), female('W', 'WifeClan'), female('WS', 'WifeClan'), male('WSH', 'Other'), male('Child', 'Other')];
+    const rels = [spouse('S', 'W'), sibling('W', 'WS'), spouse('WS', 'WSH'), parent('WSH', 'Child'), parent('WS', 'Child')];
+    expect(termsOf(persons, rels, 'Child')).toEqual(['Kahpu Kanau', 'Kasha', 'Kawa']);
+  });
+
+  it("gives a brother's child Kahpu Kanau (Kasha / Kawa) and a sister's child Dama (Kahkri / Katsa)", () => {
+    const persons = [
+      male('S', 'K'), male('B', 'K'), male('BChild', 'K'),
+      female('Sis', 'K'), male('SisH', 'DamaClan'), female('SisChild', 'DamaClan'),
+    ];
+    const rels = [
+      sibling('S', 'B'), parent('B', 'BChild'),
+      sibling('S', 'Sis'), spouse('Sis', 'SisH'), parent('SisH', 'SisChild'), parent('Sis', 'SisChild'),
+    ];
+    expect(termsOf(persons, rels, 'BChild')).toEqual(['Kahpu Kanau', 'Kasha', 'Kawa']);
+    expect(termsOf(persons, rels, 'SisChild')).toEqual(['Dama', 'Kahkri', 'Katsa']);
+  });
+
+  it("gives a woman's husband's brother's child Dama and husband's sister's child Dama ni a Dama", () => {
+    const persons = [
+      female('S', 'K'), male('H', 'HClan'),
+      male('HB', 'HClan'), male('HBChild', 'HClan'),
+      female('HS', 'HClan'), male('HSH', 'Other'), female('HSChild', 'Other'),
+    ];
+    const rels = [
+      spouse('S', 'H'), sibling('H', 'HB'), parent('HB', 'HBChild'),
+      sibling('H', 'HS'), spouse('HS', 'HSH'), parent('HSH', 'HSChild'), parent('HS', 'HSChild'),
+    ];
+    const zoneOf = (id) => calculateKinshipTerm(persons[0], persons.find((p) => p.id === id), persons, rels, DEFAULT_KINSHIP_BOX_RULES, ZONE_ONLY_TERM_RULES)?.zone;
+    expect(zoneOf('HBChild')).toBe('Dama');
+    expect(zoneOf('HSChild')).toBe('Dama ni a Dama');
+  });
+});
+
 describe('calculateKinshipTerm: the husband of a Dama woman is Dama ni a Dama', () => {
   // Father's sister's daughter (Dama) married a man whose clan is ALSO Mayu
   // to the speaker, through the father's brother's wife -- the owner's own

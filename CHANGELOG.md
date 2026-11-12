@@ -4,6 +4,23 @@ Versions follow [semantic versioning](https://semver.org/): a **major**
 bump means consuming apps may need code changes, **minor** adds something
 without breaking callers, **patch** is a fix.
 
+## 2.1.6 — 2026-11-12
+
+### Fixed
+- **A wife's brother's child is Mayu.** Every child of a spouse's sibling
+  was labelled "Mayu ni a Dama" (a woman speaking: "Dama ni a Mayu") and so
+  took Kahpu Kanau terms, whatever the sibling's gender. A wife's brother's
+  child carries the wife's clan: now Mayu ("Kanam", who answers "Kagu"). A
+  wife's sister's child carries her husband's clan: Kahpu Kanau ("Kasha" /
+  "Kawa"), now under that name. For a woman, a husband's brother's child is
+  Dama and a husband's sister's child Dama ni a Dama (her husband's sister's
+  husband already was, see J).
+
+### Changed
+- **"Mayu ni a Dama" and "Dama ni a Mayu" are no longer given.** The owner
+  counts both as Kahpu Kanau ("they are us"). `resolveTermForZone` still
+  folds either into Kahpu Kanau if a caller passes one.
+
 ## 2.1.5 — 2026-11-12
 
 ### Fixed

@@ -750,9 +750,10 @@ const normG = (g) => {
  * belongs to, when it's in more than one alliance box at once).
  */
 const resolveTermForZone = (targetZone, genDiff, seniority, termRules, sGender, tGender) => {
-  // Mayu ni a Dama / Dama ni a Mayu are transient zone labels that were
-  // never meant to carry their own term rules (the DB schema doesn't allow
-  // it) -- they always fall through to Kahpu Kanau.
+  // Mayu ni a Dama / Dama ni a Mayu are old zone labels that were never
+  // meant to carry their own term rules (the DB schema doesn't allow it) --
+  // they always fall through to Kahpu Kanau. The engine no longer gives
+  // them (since 2.1.6); kept for a caller that still passes one.
   const resolveFallbackZone = (zone) => {
     if (zone === 'Mayu ni a Dama' || zone === 'Dama ni a Mayu') return 'Kahpu Kanau';
     return zone;
@@ -1055,11 +1056,22 @@ export const calculateKinshipTerm = (
         .map(r => r.person1Id);
 
       for (const pId of targetParents) {
-        // Child of Wife's Sister or Husband's Sister
+        // Child of a Spouse's Sibling. A spouse's brother passes the spouse's
+        // own clan on (wife's brother's child -> Mayu, husband's brother's
+        // child -> Dama). A spouse's sister's children carry her husband's
+        // clan: for a man the wife's sister's husband is Kahpu Kanau (see J),
+        // for a woman the husband's sister's husband is Dama ni a Dama (J).
+        // "Mayu ni a Dama" / "Dama ni a Mayu" are no longer given: the owner
+        // counts both as Kahpu Kanau ("they are us"), 2026-11-12.
         for (const spouseId of speakerSpouses) {
           const isSpouseSibling = areSiblings(spouseId, pId, relationships);
           if (isSpouseSibling) {
-            targetZone = speaker.gender === 'Male' ? 'Mayu ni a Dama' : 'Dama ni a Mayu';
+            const spouseSibling = persons.find(p => p.id === pId);
+            if (spouseSibling?.gender === 'Male') {
+              targetZone = speaker.gender === 'Male' ? 'Mayu' : 'Dama';
+            } else {
+              targetZone = speaker.gender === 'Male' ? 'Kahpu Kanau' : 'Dama ni a Dama';
+            }
             break;
           }
         }
