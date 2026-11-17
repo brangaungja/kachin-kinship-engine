@@ -334,6 +334,21 @@ export const getKinshipBoxesForPerson = (
         const p2 = persons.find(p => p.id === rel.person2Id);
         if (!p1 || !p2) return;
 
+        // Whose marriages pass a box on. For the speaker's own side, anyone
+        // who could be of the speaker's lineage (a branch or family name
+        // left unrecorded proves nothing): one's own records are often
+        // incomplete. For any other box, only a family that IS in it, by
+        // its recorded lineage: Kachin families of one clan, even of one
+        // family name, are often different families, and a clan is often
+        // both a wife-giver and a wife-taker through different families.
+        // So a Lahpai man whose branch is not recorded is not taken for the
+        // Lahpai (Ntap Htingnu) family that is Mayu, and the family he took
+        // a wife from does not become Mayu ni a Mayu through him (owner,
+        // 17 November 2026).
+        const isOfSourceBox = (person) => (rule.sourceBox === 'Kahpu Kanau'
+          ? zoneHasLineage(sourceLineages, person)
+          : sourceLineages.has(lineageKeyOf(person)));
+
         const tryMatch = (sourceP, targetP) => {
           // The core bug this engine was shipping: comparing bare clanId
           // meant a same-clan-different-branch spouse (e.g. mother also
@@ -343,7 +358,7 @@ export const getKinshipBoxesForPerson = (
           // the same lineage, not merely the same clan name. (A spouse whose
           // recorded lineage is identical to the root's is told apart by
           // markMarriageSeparatedLineages, when the caller has applied it.)
-          if (zoneHasLineage(sourceLineages, sourceP) &&
+          if (isOfSourceBox(sourceP) &&
              (rule.sourceGender === 'Any' || sourceP.gender === rule.sourceGender) &&
              (rule.targetGender === 'Any' || targetP.gender === rule.targetGender) &&
              targetP.clanId && !isSameLineage(targetP, rootPerson)) {

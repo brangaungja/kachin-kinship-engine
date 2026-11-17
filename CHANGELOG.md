@@ -4,6 +4,24 @@ Versions follow [semantic versioning](https://semver.org/): a **major**
 bump means consuming apps may need code changes, **minor** adds something
 without breaking callers, **patch** is a fix.
 
+## 2.1.7 — 2026-11-17
+
+### Fixed
+- **A same-clan family whose branch is not recorded no longer passes a
+  group on.** `getKinshipBoxesForPerson` passed an alliance box on through
+  any marriage of someone who *could* be of a family in the box: a missing
+  branch or family name proved nothing. So when a Lahpai family (branch Ntap
+  Htingnu) was Mayu, a Lahpai man whose branch was not recorded was taken
+  for that family, and the family he took a wife from (Kareng) became Mayu ni
+  a Mayu too, although it was only Dama. Kachin families of one clan, even of
+  one family name, are often different families, and a clan is often both a
+  wife-giver and a wife-taker through different families (owner). Now only
+  the speaker's own side (Kahpu Kanau) passes a box on through such a match,
+  since one's own records are often incomplete; every other box passes on
+  only through a family that is in it by its recorded lineage. On the
+  owner's staging tree this changed no kinship term (all 812 pairs) and
+  removed only the groups that came through such a match.
+
 ## 2.1.6 — 2026-11-12
 
 ### Fixed

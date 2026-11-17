@@ -235,6 +235,26 @@ describe('getKinshipBoxesForPerson', () => {
     expect(boxes['Mayu'].has(makeLineageKey(`A${LEVELS - 1}`))).toBe(true);
     expect(boxes['Kahpu Kanau'].has(makeLineageKey(`K${LEVELS}`))).toBe(true);
   });
+
+  it('passes a group on only through a family that is in it, not a same-clan one whose branch is not recorded', () => {
+    // An uncle married a Lahpai woman of the Ntap Htingnu branch: that Lahpai
+    // family is Mayu, and her brother's wife's family Mayu ni a Mayu. Another
+    // Lahpai man, branch not recorded, married a Kareng woman: Kareng does
+    // not become Mayu ni a Mayu through him (owner, 17 November 2026).
+    const persons = [
+      male('S', 'K'), male('F', 'K'), male('U', 'K'),
+      female('UW', 'L', { subClanId: 'ntap' }), male('UWB', 'L', { subClanId: 'ntap' }), female('X', 'XClan'),
+      male('LM', 'L'), female('KW', 'Kareng'),
+    ];
+    const rels = [
+      parent('F', 'S'), sibling('F', 'U'), spouse('U', 'UW'),
+      sibling('UW', 'UWB'), spouse('UWB', 'X'), spouse('LM', 'KW'),
+    ];
+    const boxes = getKinshipBoxesForPerson('S', persons, rels, DEFAULT_KINSHIP_BOX_RULES, null);
+    expect(boxes['Mayu'].has(makeLineageKey('L', 'ntap'))).toBe(true);
+    expect(boxes['Mayu ni a Mayu'].has(makeLineageKey('XClan'))).toBe(true);
+    expect(boxes['Mayu ni a Mayu'].has(makeLineageKey('Kareng'))).toBe(false);
+  });
 });
 
 describe('calculateKinshipTerm: direct relations', () => {
